@@ -12,7 +12,13 @@ class TransformIR:
 
         with h5py.File(ir_file, 'r') as f:
             g = f[statistics]
-            self.lmbda = int(g['metadata/lambda'][()])
+            lambda_raw = g['metadata/lambda'][()]
+            if isinstance(lambda_raw, bytes):
+                lambda_raw = lambda_raw.decode()
+            if isinstance(lambda_raw, str):
+                self.lmbda = int(float(lambda_raw))
+            else:
+                self.lmbda = int(lambda_raw)
             self.grid_size = int(g['metadata/ncoeff'][()])
 
             self._uwl = g['uwl'][:]   

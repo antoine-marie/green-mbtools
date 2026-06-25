@@ -307,8 +307,14 @@ def parse_geometry(g):
         res = g
     return res
 
+def parse_core(values):
+    result = []
+    for v in values:
+        key, num = v.split(",")
+        result.append((key, int(num)))
+    return result
 
-def save_data(args, mycell, mf, kmesh, ind, weight, num_ik, ir_list, conj_list, Nk, nk, NQ, F, S, T, hf_dm, madelung, Zs, last_ao):
+def save_data(args, mycell, mf, kmesh, ind, weight, num_ik, ir_list, conj_list, Nk, nk, NQ, F, S, T, hf_dm, madelung, Zs, last_ao, ncore, core_reordering):
     '''
     Save data in Green/WeakCoupling format into a hdf5 file
     '''
@@ -352,6 +358,8 @@ def save_data(args, mycell, mf, kmesh, ind, weight, num_ik, ir_list, conj_list, 
     nk_arr = np.atleast_1d(np.array(args.nk, dtype=int))
     inp_data["symmetry/k/nk_list"] = np.array([nk_arr[0]]*3, dtype=int) if nk_arr.size == 1 else nk_arr
     inp_data["params/NQ"] = NQ
+    inp_data["params/ncore"] = ncore
+    inp_data["params/core_reordering"] = core_reordering
     inp_data.attrs["__green_version__"] = __version__
     inp_data.close()
     chk.save(args.output_path, "Cell", mycell.dumps())
@@ -409,7 +417,10 @@ def orthogonalize(mydf, orth, X_k, X_inv_k, F, T, hf_dm, S, mf=None):
                 F_bar = 0.5 * (F[0, ik] + F[1, ik])
                 _, C_k = LA.eigh(F_bar, Sk)
             else:
-                C_k = mf.mo_coeff[ik]
+                if len(mf.mo_coeff.shape) == 2: # means the shape is (nao,nao) we are dealing with a molecule
+                    C_k = mf.mo_coeff
+                else: # the shape is (nk,nao,nao)
+                    C_k = mf.mo_coeff[ik]
             x, x_pinv = ortho_utils.mo_per_k(Sk, C_k)
         elif orth == "natural":
             dmk = 0.5 * (hf_dm[0, ik] + hf_dm[1, ik]) if ns == 2 else hf_dm[0, ik]
@@ -492,6 +503,7 @@ def add_common_params(parser):
         "--x2c", type=int, default=0, choices=[0, 1, 2],
         help="enable X2C calculations (0: non-rel., 1: sfX2C1e, 2: X2C1e)"
     )
+    parser.add_argument("--nb_core_elec", nargs="+", type=str)
     advanced = parser.add_argument_group(
         "Advanced options",
         "Low-level knobs intended for expert users. Default values are appropriate for most calculations."
@@ -555,6 +567,8 @@ def init_mol_params(params=None):
     args.nk = [1, 1, 1]
     args.shift =  [0.,0.,0.]
     args.center = [0.,0.,0.]
+    if args.nb_core_elec is not None:
+        args.nb_core_elec = parse_core(args.nb_core_elec)
     return args
 
 
