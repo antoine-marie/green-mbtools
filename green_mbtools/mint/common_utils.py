@@ -13,9 +13,13 @@ from pyscf import gto as mgto
 from pyscf import scf as mscf
 from pyscf import dft as mdft
 from pyscf import df as mdf
+from pyscf import mp
 from pyscf.pbc import tools, gto, df, scf, dft
 from pyscf import __version__ as pyscf_version
 from pyscf.pbc.lib import kpts as libkpts
+
+np.set_printoptions(suppress=True)
+
 
 from . import integral_utils as int_utils
 from . import kpt_utils
@@ -314,7 +318,7 @@ def parse_core(values):
         result.append((key, int(num)))
     return result
 
-def save_data(args, mycell, mf, kmesh, ind, weight, num_ik, ir_list, conj_list, Nk, nk, NQ, F, S, T, hf_dm, madelung, Zs, last_ao, ncore, core_reordering):
+def save_data(args, mycell, mf, kmesh, ind, weight, num_ik, ir_list, conj_list, Nk, nk, NQ, X_k, X_inv_k, F, S, T, hf_dm, madelung, Zs, last_ao, ncore, core_reordering, n_del):
     '''
     Save data in Green/WeakCoupling format into a hdf5 file
     '''
@@ -339,6 +343,10 @@ def save_data(args, mycell, mf, kmesh, ind, weight, num_ik, ir_list, conj_list, 
     inp_data["HF/nk"] = nk
     inp_data["HF/Energy"] = mf.e_tot
     inp_data["HF/Energy_nuc"] = mf.energy_nuc()
+    inp_data["HF/X-k"] = X_k.view(np.float64).reshape(X_k.shape[0], X_k.shape[1], X_k.shape[2], 2) # X_k has no ns dimension
+    inp_data["HF/X-k"].attrs["__complex__"] = np.int8(1)
+    inp_data["HF/X_inv-k"] = X_inv_k.view(np.float64).reshape(X_inv_k.shape[0], X_inv_k.shape[1], X_inv_k.shape[2], 2)
+    inp_data["HF/X_inv-k"].attrs["__complex__"] = np.int8(1)
     inp_data["HF/Fock-k"] = F.view(np.float64).reshape(F.shape[0], F.shape[1], F.shape[2], F.shape[3], 2)
     inp_data["HF/Fock-k"].attrs["__complex__"] = np.int8(1)
     inp_data["HF/S-k"] = S.view(np.float64).reshape(S.shape[0], S.shape[1], S.shape[2], S.shape[3], 2)
@@ -443,13 +451,11 @@ def orthogonalize(mydf, orth, X_k, X_inv_k, F, T, hf_dm, S, mf=None):
         maxdiff = max(maxdiff, diff_max)
     logging.info(f"max diff from identity {maxdiff}")
 
-    if orth == "none":
-        X_inv_k = np.asarray(X_inv_k).reshape(F.shape[1:])
-        X_k = np.asarray(X_k).reshape(F.shape[1:])
-        return X_k, X_inv_k, S, F, T, hf_dm
-
     X_inv_k = np.asarray(X_inv_k).reshape(F.shape[1:])
     X_k = np.asarray(X_k).reshape(F.shape[1:])
+
+    if orth == "none":
+        return X_k, X_inv_k, S, F, T, hf_dm
 
     F = transform(F, X_k, X_inv_k)
     T = transform(T, X_k, X_inv_k)

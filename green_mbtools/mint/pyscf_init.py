@@ -250,7 +250,7 @@ class pyscf_pbc_init (pyscf_init):
         # Save data into Green Software package input format.
         comm.save_data(
             self.args, self.cell, mf, self.kmesh, self.ind, self.weight, self.num_ik, self.ir_list, self.conj_list,
-            Nk, nk, NQ, F, S, T, hf_dm, tools.pbc.madelung(self.cell, self.kmesh), Zs, last_ao, self.ncore, self.core_reordering
+            Nk, nk, NQ, X_k, X_inv_k, F, S, T, hf_dm, tools.pbc.madelung(self.cell, self.kmesh), Zs, last_ao, self.ncore, self.core_reordering, n_del
         )
         # Save symmetry operations info for main and auxiliary unit cells
         comm.store_kstruct_ops_info(self.args, self.cell, self.kmesh, self.kstruct, X_k=X_k, X_inv_k=X_inv_k,)
@@ -556,7 +556,7 @@ class pyscf_mol_init (pyscf_init):
             )
         X_k, X_inv_k, S, F, T, hf_dm = comm.orthogonalize(mydf, self.args.orth, X_k, X_inv_k, F, T, hf_dm, S, mf=mf)
         # Save data into Green Software package input format. Here we set Madelung constant to 0 as there is not long range divergence for molecule
-        comm.save_data(self.args, self.kcell, mf, self.kmesh, self.ind, self.weight, self.num_ik, self.ir_list, self.conj_list, Nk, nk, NQ, F, S, T, hf_dm, 0.0, Zs, last_ao, self.ncore, self.core_reordering)
+        comm.save_data(self.args, self.kcell, mf, self.kmesh, self.ind, self.weight, self.num_ik, self.ir_list, self.conj_list, Nk, nk, NQ, X_k, X_inv_k, F, S, T, hf_dm, 0.0, Zs, last_ao, self.ncore, self.core_reordering, n_del)
         comm.store_mol_symmetry_info(self.args, self.kcell, auxcell, self.kmesh)
         if bool(self.args.df_int):
             self.compute_df_int(nao, X_k)
