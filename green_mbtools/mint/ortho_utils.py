@@ -86,7 +86,7 @@ def natural_per_k(Sk, dmk):
     S_inv_half = _S_inv_half(Sk)
     M = S_inv_half @ dmk @ S_inv_half
     M = 0.5 * (M + M.conj().T)
-    _, u = np.linalg.eigh(M)
+    nat_occ, u = np.linalg.eigh(M)
     C_NO = (S_inv_half @ u).astype(np.complex128)
     return C_NO.conj().T, Sk @ C_NO
 

@@ -13,7 +13,7 @@ from . import integral_utils as int_utils
 from . import symmetry_utils as symm_utils
 from ..pesto import ft
 
-
+from green_mbtools.pesto import mb
 
 class pyscf_init:
     '''Initialization class for Green project
@@ -131,7 +131,7 @@ class pyscf_init:
         list_orb_idx = list_core_idx + list_val_idx
         self.ncore = len(list_core_idx)
 
-        if self.args.orth == 'mo':
+        if self.args.orth == 'mo' or self.args.orth == 'mp2':
             self.core_reordering = [i for i in range(self.cell.nao_nr())] # in the mo case the core does not need to be reordered
         else:
             self.core_reordering = list_orb_idx
@@ -246,11 +246,48 @@ class pyscf_pbc_init (pyscf_init):
                 "with mode={!r}; allowed modes are 'none', 'lowdin', "
                 "'symmetric_lowdin'.".format(self.args.orth)
             )
-        X_k, X_inv_k, S, F, T, hf_dm = comm.orthogonalize(mydf, self.args.orth, X_k, X_inv_k, F, T, hf_dm, S, mf=mf)
+        if self.args.orth == 'mp2':
+
+            print("Reading input file")
+            f = h5py.File(self.args.output_path, 'r')
+            ibz2bz = f["/symmetry/k/ibz2bz"][()]
+            bz2ibz = f["/symmetry/k/bz2ibz"][()]
+            tr_conj = f["/symmetry/k/tr_conj"][()]
+            k_sym_trans = f["/symmetry/k/k_sym_transform_ao"][()]
+            f.close()
+
+            print("Reading sim file and the associated density matrix")
+            f = h5py.File(self.args.sim, 'r')
+            it = self.args.iter
+            if it == -1:
+                it = f["iter"][()]
+            rG_tk = f["iter" + str(it) + "/G_tau/data"][()]
+            G_tk = mb.to_full_bz(rG_tk, tr_conj, ibz2bz, bz2ibz, 2, k_sym_trans)
+            print("The shape of G in the irreducible Brillouin zone is ", rG_tk.shape)
+            print("The shape of G in the reducible Brillouin zone is ", G_tk.shape)
+            if rG_tk.shape[1] > 1:
+                print("UHF mp2 natural orbitals are not implemented yet.")
+                exit()
+
+            del rG_tk
+
+            mu         = f["iter" + str(it) + "/mu"][()]
+            print(it,mu)
+            nts        = G_tk.shape[0]
+            f.close()
+
+            ns = hf_dm.shape[0]
+            hf_dm = np.zeros((ns, nk, nao, nao), dtype=float)
+            for s in range(ns):
+                for k in range(nk):
+                    hf_dm[s, k, :, :] = - 2 * G_tk[-1,s,k,:,:].real
+
+
+        X_k, X_inv_k, S, F, T, hf_dm = comm.orthogonalize(self.args, mydf, X_k, X_inv_k, F, T, hf_dm, S, mf=mf)
         # Save data into Green Software package input format.
         comm.save_data(
             self.args, self.cell, mf, self.kmesh, self.ind, self.weight, self.num_ik, self.ir_list, self.conj_list,
-            Nk, nk, NQ, X_k, X_inv_k, F, S, T, hf_dm, tools.pbc.madelung(self.cell, self.kmesh), Zs, last_ao, self.ncore, self.core_reordering, n_del
+            Nk, nk, NQ, X_k, X_inv_k, F, S, T, hf_dm, tools.pbc.madelung(self.cell, self.kmesh), Zs, last_ao, self.ncore, self.core_reordering
         )
         # Save symmetry operations info for main and auxiliary unit cells
         comm.store_kstruct_ops_info(self.args, self.cell, self.kmesh, self.kstruct, X_k=X_k, X_inv_k=X_inv_k,)
@@ -553,10 +590,42 @@ class pyscf_mol_init (pyscf_init):
                 "ortho not supported for 2-component / x2c1e calculations "
                 "with mode={!r}; allowed modes are 'none', 'lowdin', "
                 "'symmetric_lowdin'.".format(self.args.orth)
-            )
-        X_k, X_inv_k, S, F, T, hf_dm = comm.orthogonalize(mydf, self.args.orth, X_k, X_inv_k, F, T, hf_dm, S, mf=mf)
+            )        
+        if self.args.orth == 'mp2':
+            print("Reading sim file and the associated density matrix")
+            f = h5py.File(self.args.sim, 'r')
+
+            it = self.args.iter
+            if it == -1:
+                it = f["iter"][()]
+    
+            rG_tk = f["iter" + str(it) + "/G_tau/data"][()]
+            if rG_tk.shape[2] > 1:
+                print("There is more than one k-point, please use pbc code.")
+                exit()
+            if rG_tk.shape[1] > 1:
+                print("UHF mp2 natural orbitals are not implemented yet.")
+                exit()
+            # k_sym_trans = np.eye(nso, dtype=np.complex128).reshape(1, nso, nso)
+            # G_tk  = mb.to_full_bz(rG_tk, self.conj_list, self.ir_list, self.ind, 2, k_sym_trans) # todo change this for x2c
+            print(rG_tk.shape)
+            G_tk = rG_tk
+            del rG_tk
+
+            mu         = f["iter" + str(it) + "/mu"][()]
+            nts        = G_tk.shape[0]
+            f.close()
+
+            ns = hf_dm.shape[0]
+            hf_dm = np.zeros((ns, nk, nao, nao), dtype=float)
+            for s in range(ns):
+                for k in range(nk):
+                    hf_dm[s, k, :, :] = - 2 * G_tk[-1,s,k,:,:].real
+            
+
+        X_k, X_inv_k, S, F, T, hf_dm = comm.orthogonalize(self.args, mydf, X_k, X_inv_k, F, T, hf_dm, S, mf=mf)
         # Save data into Green Software package input format. Here we set Madelung constant to 0 as there is not long range divergence for molecule
-        comm.save_data(self.args, self.kcell, mf, self.kmesh, self.ind, self.weight, self.num_ik, self.ir_list, self.conj_list, Nk, nk, NQ, X_k, X_inv_k, F, S, T, hf_dm, 0.0, Zs, last_ao, self.ncore, self.core_reordering, n_del)
+        comm.save_data(self.args, self.kcell, mf, self.kmesh, self.ind, self.weight, self.num_ik, self.ir_list, self.conj_list, Nk, nk, NQ, X_k, X_inv_k, F, S, T, hf_dm, 0.0, Zs, last_ao, self.ncore, self.core_reordering)
         comm.store_mol_symmetry_info(self.args, self.kcell, auxcell, self.kmesh)
         if bool(self.args.df_int):
             self.compute_df_int(nao, X_k)

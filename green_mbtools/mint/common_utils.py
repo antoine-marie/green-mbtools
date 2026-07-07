@@ -318,7 +318,7 @@ def parse_core(values):
         result.append((key, int(num)))
     return result
 
-def save_data(args, mycell, mf, kmesh, ind, weight, num_ik, ir_list, conj_list, Nk, nk, NQ, X_k, X_inv_k, F, S, T, hf_dm, madelung, Zs, last_ao, ncore, core_reordering, n_del):
+def save_data(args, mycell, mf, kmesh, ind, weight, num_ik, ir_list, conj_list, Nk, nk, NQ, X_k, X_inv_k, F, S, T, hf_dm, madelung, Zs, last_ao, ncore, core_reordering):
     '''
     Save data in Green/WeakCoupling format into a hdf5 file
     '''
@@ -378,7 +378,7 @@ def save_data(args, mycell, mf, kmesh, ind, weight, num_ik, ir_list, conj_list, 
     inp_data.close()
 
 
-def orthogonalize(mydf, orth, X_k, X_inv_k, F, T, hf_dm, S, mf=None):
+def orthogonalize(args, mydf, X_k, X_inv_k, F, T, hf_dm, S, mf=None):
     '''
     Transform Fock-matrix, non-interacting Hamiltonian, density matrix and overlap matrix into an orthogonal basis.
 
@@ -391,8 +391,12 @@ def orthogonalize(mydf, orth, X_k, X_inv_k, F, T, hf_dm, S, mf=None):
     ``mf`` is required for "mo"; "natural" uses ``hf_dm``. Per-k basis
     construction is delegated to ``ortho_utils.{lowdin,mo,natural}_per_k``.
     '''
+    orth = args.orth
     if orth == "mo" and mf is None:
         raise ValueError("orthogonalize: mf is required for orth='mo'.")
+
+    if orth == "mp2" and mf is None:
+        raise ValueError("orthogonalize: mf is required for orth='mp2'.")
 
     ns = hf_dm.shape[0]
     if orth == "mo" and ns == 2:
@@ -425,14 +429,62 @@ def orthogonalize(mydf, orth, X_k, X_inv_k, F, T, hf_dm, S, mf=None):
                 F_bar = 0.5 * (F[0, ik] + F[1, ik])
                 _, C_k = LA.eigh(F_bar, Sk)
             else:
-                if len(mf.mo_coeff.shape) == 2: # means the shape is (nao,nao) we are dealing with a molecule
-                    C_k = mf.mo_coeff
-                else: # the shape is (nk,nao,nao)
+                if type(mf.mo_coeff) == list: # means this is a list of shape (nk,nao,nao)
                     C_k = mf.mo_coeff[ik]
+                else: # this is an array of shape is (nao,nao)
+                    C_k = mf.mo_coeff
             x, x_pinv = ortho_utils.mo_per_k(Sk, C_k)
         elif orth == "natural":
             dmk = 0.5 * (hf_dm[0, ik] + hf_dm[1, ik]) if ns == 2 else hf_dm[0, ik]
             x, x_pinv = ortho_utils.natural_per_k(Sk, dmk)
+        elif orth == "mp2":
+            if ns ==2:
+                raise ValueError(f"The mp2 orthogonalization is not yet implemented for UHF.")
+            
+            dmk = hf_dm[0, ik, :, :]
+
+            # the code below is adapted from pyscf
+            mo_occ = np.asarray(mf.mo_occ)
+            nmo = len(mo_occ)
+            nocc = (mo_occ > 0).sum()
+            nvir = nmo - nocc            
+            # Natural occupations and natural orbitals
+            nat_occ, no_coeff = np.linalg.eigh(dmk[:,:])
+            # Sort descending occupation
+            idx = np.argsort(nat_occ)[::-1]
+            nat_occ, no_coeff = nat_occ[idx], no_coeff[:,idx]
+
+            #if args.fvo_nvir_act is None:
+            #    if args.fvo_pct_occ is None:
+            #        nvir_keep = np.count_nonzero(nat_occ>args.fvo_thresh)
+            #    else:
+            #        cumsum = np.cumsum(nat_occ/np.sum(nat_occ))
+            #        nvir_keep = np.count_nonzero(
+            #            [c <= args.fvo_pct_occ or np.isclose(c, args.fvo_pct_occ) for c in cumsum])
+            #else:
+            #    nvir_keep = min(nvir, args.fvo_nvir_act)
+            #n_del = nvir - nvir_keep
+            #print(f"the number of virtual to keep is {nvir_keep}, the number to delete is {n_del}")
+
+            print("The list of natural occupation is")
+            print(nat_occ)
+            print("The sum of occupations is ", nat_occ.sum())
+            print(f"There are {nvir} orbitals")
+            print(f"There are {np.count_nonzero(nat_occ<1e-8)} orbitals with occupations below 1e-8")
+            print(f"There are {np.count_nonzero(nat_occ<1e-7)} orbitals with occupations below 1e-7")
+            print(f"There are {np.count_nonzero(nat_occ<1e-6)} orbitals with occupations below 1e-6")
+            print(f"There are {np.count_nonzero(nat_occ<1e-5)} orbitals with occupations below 1e-5")
+            print(f"There are {np.count_nonzero(nat_occ<1e-4)} orbitals with occupations below 1e-4")
+            print(f"There are {np.count_nonzero(nat_occ<1e-3)} orbitals with occupations below 1e-3")
+            print(f"There are {np.count_nonzero(nat_occ<1e-3)} orbitals with occupations below 1e-2")
+    
+            print(no_coeff.shape)
+
+            if type(mf.mo_coeff) == list: # means this is a list of shape (nk,nao,nao)
+                C_k = mf.mo_coeff[ik] @ no_coeff
+            else: # this is an array of shape is (nao,nao)
+                C_k = mf.mo_coeff @ no_coeff
+            x, x_pinv = ortho_utils.mo_per_k(Sk, C_k)
         else:
             raise ValueError(f"orthogonalize: unknown orth '{orth}'.")
 
@@ -484,7 +536,7 @@ def add_common_params(parser):
     parser.add_argument("--output_path", type=str, default="input.h5", help="output file with initial data")
     parser.add_argument(
         "--orth", type=str, default="none",
-        choices=["none", "lowdin", "symmetric_lowdin", "mo", "natural", "0", "1"],
+        choices=["none", "lowdin", "symmetric_lowdin", "mo", "natural", "mp2", "0", "1"],
         help=(
             "Orbital basis for stored quantities: "
             "'none' = keep AO basis (legacy '0'); "
@@ -492,6 +544,7 @@ def add_common_params(parser):
             "'symmetric_lowdin' = Hermitian Löwdin S^{-1/2}; "
             "'mo' = canonical MOs from mean-field; "
             "'natural' = natural orbitals from mean-field density matrix."
+            "'mp2' = canonical occupied orbitals and mp2 virtual orbitals."
         ),
     )
     parser.add_argument("--beta", type=float, default=None, help="Emperical parameter for even-Gaussian auxiliary basis")
@@ -509,7 +562,6 @@ def add_common_params(parser):
         "--x2c", type=int, default=0, choices=[0, 1, 2],
         help="enable X2C calculations (0: non-rel., 1: sfX2C1e, 2: X2C1e)"
     )
-    parser.add_argument("--nb_core_elec", nargs="+", type=str)
     advanced = parser.add_argument_group(
         "Advanced options",
         "Low-level knobs intended for expert users. Default values are appropriate for most calculations."
@@ -521,6 +573,13 @@ def add_common_params(parser):
         help="Use eigenvalue decomposition for j2c factors during DF build. Set false to force Cholesky-based path."
     )
 
+    parser.add_argument("--nb_core_elec", nargs="+", type=str)
+    parser.add_argument("--sim", type=str, default="sim.h5", help="GW/GF2 output file to read density matrix for natural orbital")
+    parser.add_argument("--iter", type=int, default=2, help="GW/GF2 iteration to use")
+    parser.add_argument("--ir_file", type=str, help="IR-grid HDF5 file")
+    parser.add_argument("--fvo_thresh", type=float, default=1e-6, help="Threshold of occupation to keep for frozen virtual orbitals")
+    parser.add_argument("--fvo_pct_occ", type=float, help="Percentage of occupation to keep for frozen virtual orbitals")
+    parser.add_argument("--fvo_nvir_act", type=int, help="Number of virtual orbital to discard")
 
 def add_pbc_params(parser):
     '''
