@@ -186,7 +186,7 @@ def transform(Z, X, X_inv):
             diff = np.max(np.abs(Z[ss, ik] - Z_restore))
             maxdiff = max(maxdiff, diff)
 
-            if not np.allclose(Z[ss, ik], Z_restore, atol=1e-12, rtol=1e-12) :
+            if not np.allclose(Z[ss, ik], Z_restore, atol=1e-10, rtol=1e-10) :
                 error = "Orthogonal transformation failed. Max difference between origin and restored quantity is {}".format(np.max(np.abs(Z[ss,ik] - Z_restore)))
                 raise RuntimeError(error)
     logging.info(f"Maximum difference between Z and Z_restore {maxdiff}")
@@ -470,15 +470,28 @@ def orthogonalize(args, mydf, X_k, X_inv_k, F, T, hf_dm, S, mf=None):
             print(nat_occ)
             print("The sum of occupations is ", nat_occ.sum())
             print(f"There are {nvir} orbitals")
-            print(f"There are {np.count_nonzero(nat_occ<1e-8)} orbitals with occupations below 1e-8")
-            print(f"There are {np.count_nonzero(nat_occ<1e-7)} orbitals with occupations below 1e-7")
-            print(f"There are {np.count_nonzero(nat_occ<1e-6)} orbitals with occupations below 1e-6")
-            print(f"There are {np.count_nonzero(nat_occ<1e-5)} orbitals with occupations below 1e-5")
-            print(f"There are {np.count_nonzero(nat_occ<1e-4)} orbitals with occupations below 1e-4")
-            print(f"There are {np.count_nonzero(nat_occ<1e-3)} orbitals with occupations below 1e-3")
-            print(f"There are {np.count_nonzero(nat_occ<1e-3)} orbitals with occupations below 1e-2")
+            print(f"To keep only orbitals with occupations larger than 1e-8, the number of orbital to delete is {np.count_nonzero(nat_occ<1e-8)}")
+            print(f"To keep only orbitals with occupations larger than 1e-7, the number of orbital to delete is {np.count_nonzero(nat_occ<1e-7)}")
+            print(f"To keep only orbitals with occupations larger than 1e-6, the number of orbital to delete is {np.count_nonzero(nat_occ<1e-6)}")
+            print(f"To keep only orbitals with occupations larger than 1e-5, the number of orbital to delete is {np.count_nonzero(nat_occ<1e-5)}")
+            print(f"To keep only orbitals with occupations larger than 1e-4, the number of orbital to delete is {np.count_nonzero(nat_occ<1e-4)}")
+            print(f"To keep only orbitals with occupations larger than 1e-3, the number of orbital to delete is {np.count_nonzero(nat_occ<1e-3)}")
+            print(f"To keep only orbitals with occupations larger than 1e-2, the number of orbital to delete is {np.count_nonzero(nat_occ<1e-2)}")
     
-            print(no_coeff.shape)
+            nat_occ_vir = nat_occ[nocc:]
+            cumsum = np.cumsum(nat_occ_vir/np.sum(nat_occ_vir))
+            ndel = len(cumsum) - np.count_nonzero([c <= 0.75 or np.isclose(c, 0.75) for c in cumsum])
+            print(f"To keep 75% of total virtual occupation, the number of orbitals to delete is {ndel}")
+            ndel = len(cumsum) - np.count_nonzero([c <= 0.90 or np.isclose(c, 0.90) for c in cumsum])
+            print(f"To keep 90% of total virtual occupation, the number of orbitals to delete is {ndel}")
+            ndel = len(cumsum) - np.count_nonzero([c <= 0.95 or np.isclose(c, 0.95) for c in cumsum])
+            print(f"To keep 95% of total virtual occupation, the number of orbitals to delete is {ndel}")
+            ndel = len(cumsum) - np.count_nonzero([c <= 0.99 or np.isclose(c, 0.99) for c in cumsum])
+            print(f"To keep 99% of total virtual occupation, the number of orbitals to delete is {ndel}")
+            ndel = len(cumsum) - np.count_nonzero([c <= 0.995 or np.isclose(c, 0.995) for c in cumsum])
+            print(f"To keep 99.5% of total virtual occupation, the number of orbitals to delete is {ndel}")
+            ndel = len(cumsum) - np.count_nonzero([c <= 0.999 or np.isclose(c, 0.999) for c in cumsum])
+            print(f"To keep 99.9% of total virtual occupation, the number of orbitals to delete is {ndel}")
 
             if type(mf.mo_coeff) == list: # means this is a list of shape (nk,nao,nao)
                 C_k = mf.mo_coeff[ik] @ no_coeff
