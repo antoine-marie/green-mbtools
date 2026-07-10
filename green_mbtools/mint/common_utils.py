@@ -378,6 +378,23 @@ def save_data(args, mycell, mf, kmesh, ind, weight, num_ik, ir_list, conj_list, 
     inp_data.close()
 
 
+
+
+def pct_occ_fno(nat_occ_vir,blocks,thresh):            
+    
+    total = nat_occ_vir.sum()
+    cum = 0.0
+    nkeep = 0
+    for b in blocks:
+        block_occ = nat_occ_vir[b].sum()
+        if (cum + block_occ) / total <= thresh:
+            cum += block_occ
+            nkeep += len(nat_occ_vir[b])
+        else:
+            break
+
+    return len(nat_occ_vir) - nkeep
+
 def orthogonalize(args, mydf, X_k, X_inv_k, F, T, hf_dm, S, mf=None):
     '''
     Transform Fock-matrix, non-interacting Hamiltonian, density matrix and overlap matrix into an orthogonal basis.
@@ -479,18 +496,27 @@ def orthogonalize(args, mydf, X_k, X_inv_k, F, T, hf_dm, S, mf=None):
             print(f"To keep only orbitals with occupations larger than 1e-2, the number of orbital to delete is {np.count_nonzero(nat_occ<1e-2)}")
     
             nat_occ_vir = nat_occ[nocc:]
-            cumsum = np.cumsum(nat_occ_vir/np.sum(nat_occ_vir))
-            ndel = len(cumsum) - np.count_nonzero([c <= 0.75 or np.isclose(c, 0.75) for c in cumsum])
+
+            # Find degenerate blocks
+            blocks = []
+            start = 0
+            for i in range(1, len(nat_occ_vir)):
+                if not np.isclose(nat_occ_vir[i], nat_occ_vir[i-1], atol=1e-8):
+                    blocks.append(slice(start, i))
+                    start = i
+            blocks.append(slice(start, len(nat_occ_vir)))
+
+            ndel = pct_occ_fno(nat_occ_vir, blocks, 0.75)
             print(f"To keep 75% of total virtual occupation, the number of orbitals to delete is {ndel}")
-            ndel = len(cumsum) - np.count_nonzero([c <= 0.90 or np.isclose(c, 0.90) for c in cumsum])
+            ndel = pct_occ_fno(nat_occ_vir, blocks, 0.90)
             print(f"To keep 90% of total virtual occupation, the number of orbitals to delete is {ndel}")
-            ndel = len(cumsum) - np.count_nonzero([c <= 0.95 or np.isclose(c, 0.95) for c in cumsum])
+            ndel = pct_occ_fno(nat_occ_vir, blocks, 0.95)
             print(f"To keep 95% of total virtual occupation, the number of orbitals to delete is {ndel}")
-            ndel = len(cumsum) - np.count_nonzero([c <= 0.99 or np.isclose(c, 0.99) for c in cumsum])
+            ndel = pct_occ_fno(nat_occ_vir, blocks, 0.99)
             print(f"To keep 99% of total virtual occupation, the number of orbitals to delete is {ndel}")
-            ndel = len(cumsum) - np.count_nonzero([c <= 0.995 or np.isclose(c, 0.995) for c in cumsum])
+            ndel = pct_occ_fno(nat_occ_vir, blocks, 0.995)
             print(f"To keep 99.5% of total virtual occupation, the number of orbitals to delete is {ndel}")
-            ndel = len(cumsum) - np.count_nonzero([c <= 0.999 or np.isclose(c, 0.999) for c in cumsum])
+            ndel = pct_occ_fno(nat_occ_vir, blocks, 0.999)
             print(f"To keep 99.9% of total virtual occupation, the number of orbitals to delete is {ndel}")
 
             if type(mf.mo_coeff) == list: # means this is a list of shape (nk,nao,nao)
