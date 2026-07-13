@@ -591,8 +591,19 @@ class pyscf_mol_init (pyscf_init):
                 "with mode={!r}; allowed modes are 'none', 'lowdin', "
                 "'symmetric_lowdin'.".format(self.args.orth)
             )        
+        mo_coeff = 0
         if self.args.orth == 'mp2':
             print("Reading sim file and the associated density matrix")
+            f = h5py.File(self.args.input_fno, 'r')
+            mo_coeff_raw  = f["HF/mo_coeff"][()]
+            # Normalize mo_coeff to (ns, nk, nao, nao).
+            # Molecular RHF/GHF stores (nao, nao); UHF stores (ns, nao, nao).
+            mc = mo_coeff_raw
+            if   mc.ndim == 2:                          mo_coeff = mc[np.newaxis, np.newaxis]
+            elif mc.ndim == 3 and mc.shape[0] == ns:    mo_coeff = mc[:, np.newaxis]
+            elif mc.ndim == 3:                          mo_coeff = mc[np.newaxis]
+            else:                                       mo_coeff = mc
+            f.close()
             f = h5py.File(self.args.sim, 'r')
 
             it = self.args.iter
@@ -623,7 +634,7 @@ class pyscf_mol_init (pyscf_init):
                     hf_dm[s, k, :, :] = - 2 * G_tk[-1,s,k,:,:].real
             
 
-        X_k, X_inv_k, S, F, T, hf_dm = comm.orthogonalize(self.args, mydf, X_k, X_inv_k, F, T, hf_dm, S, mf=mf)
+        X_k, X_inv_k, S, F, T, hf_dm = comm.orthogonalize(self.args, mydf, X_k, X_inv_k, F, T, hf_dm, S, mo_coeff, mf=mf)
         # Save data into Green Software package input format. Here we set Madelung constant to 0 as there is not long range divergence for molecule
         comm.save_data(self.args, self.kcell, mf, self.kmesh, self.ind, self.weight, self.num_ik, self.ir_list, self.conj_list, Nk, nk, NQ, X_k, X_inv_k, F, S, T, hf_dm, 0.0, Zs, last_ao, self.ncore, self.core_reordering)
         comm.store_mol_symmetry_info(self.args, self.kcell, auxcell, self.kmesh)

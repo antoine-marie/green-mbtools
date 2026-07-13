@@ -395,7 +395,7 @@ def pct_occ_fno(nat_occ_vir,blocks,thresh):
 
     return len(nat_occ_vir) - nkeep
 
-def orthogonalize(args, mydf, X_k, X_inv_k, F, T, hf_dm, S, mf=None):
+def orthogonalize(args, mydf, X_k, X_inv_k, F, T, hf_dm, S, mo_coeff, mf=None):
     '''
     Transform Fock-matrix, non-interacting Hamiltonian, density matrix and overlap matrix into an orthogonal basis.
 
@@ -460,16 +460,34 @@ def orthogonalize(args, mydf, X_k, X_inv_k, F, T, hf_dm, S, mf=None):
             
             dmk = hf_dm[0, ik, :, :]
 
-            # the code below is adapted from pyscf
             mo_occ = np.asarray(mf.mo_occ)
             nmo = len(mo_occ)
             nocc = (mo_occ > 0).sum()
             nvir = nmo - nocc            
+
+            # Diagonalize the whole density matrix
             # Natural occupations and natural orbitals
             nat_occ, no_coeff = np.linalg.eigh(dmk[:,:])
             # Sort descending occupation
             idx = np.argsort(nat_occ)[::-1]
             nat_occ, no_coeff = nat_occ[idx], no_coeff[:,idx]
+            nat_occ_vir = nat_occ[nocc:]
+
+            # Diagonalize dm_vir only
+            #nat_occ, no_coeff = np.linalg.eigh(dmk[nocc:,nocc:])
+            #idx = np.argsort(nat_occ)[::-1]
+            #nat_occ, no_coeff = nat_occ[idx], no_coeff[:,idx]
+            #nat_occ_vir = nat_occ[:]
+            #mo_vir = mf.mo_coeff[:,nocc:]
+            #mo_vir = np.dot(mo_vir,no_coeff)
+            #C_k = np.hstack((mf.mo_coeff[:,:nocc],mo_vir))
+
+            #if type(mo_coeff) == list: # means this is a list of shape (nk,nao,nao)
+                #C_k = mo_coeff[ik] @ no_coeff
+            #else: # this is an array of shape is (nao,nao)
+            C_k = mo_coeff[0,0] @ no_coeff
+            x, x_pinv = ortho_utils.mo_per_k(Sk, C_k)
+
 
             #if args.fvo_nvir_act is None:
             #    if args.fvo_pct_occ is None:
@@ -486,7 +504,7 @@ def orthogonalize(args, mydf, X_k, X_inv_k, F, T, hf_dm, S, mf=None):
             print("The list of natural occupation is")
             print(nat_occ)
             print("The sum of occupations is ", nat_occ.sum())
-            print(f"There are {nvir} orbitals")
+            print(f"There are {nvir} virtual orbitals")
             print(f"To keep only orbitals with occupations larger than 1e-8, the number of orbital to delete is {np.count_nonzero(nat_occ<1e-8)}")
             print(f"To keep only orbitals with occupations larger than 1e-7, the number of orbital to delete is {np.count_nonzero(nat_occ<1e-7)}")
             print(f"To keep only orbitals with occupations larger than 1e-6, the number of orbital to delete is {np.count_nonzero(nat_occ<1e-6)}")
@@ -494,8 +512,6 @@ def orthogonalize(args, mydf, X_k, X_inv_k, F, T, hf_dm, S, mf=None):
             print(f"To keep only orbitals with occupations larger than 1e-4, the number of orbital to delete is {np.count_nonzero(nat_occ<1e-4)}")
             print(f"To keep only orbitals with occupations larger than 1e-3, the number of orbital to delete is {np.count_nonzero(nat_occ<1e-3)}")
             print(f"To keep only orbitals with occupations larger than 1e-2, the number of orbital to delete is {np.count_nonzero(nat_occ<1e-2)}")
-    
-            nat_occ_vir = nat_occ[nocc:]
 
             # Find degenerate blocks
             blocks = []
@@ -519,11 +535,6 @@ def orthogonalize(args, mydf, X_k, X_inv_k, F, T, hf_dm, S, mf=None):
             ndel = pct_occ_fno(nat_occ_vir, blocks, 0.999)
             print(f"To keep 99.9% of total virtual occupation, the number of orbitals to delete is {ndel}")
 
-            if type(mf.mo_coeff) == list: # means this is a list of shape (nk,nao,nao)
-                C_k = mf.mo_coeff[ik] @ no_coeff
-            else: # this is an array of shape is (nao,nao)
-                C_k = mf.mo_coeff @ no_coeff
-            x, x_pinv = ortho_utils.mo_per_k(Sk, C_k)
         else:
             raise ValueError(f"orthogonalize: unknown orth '{orth}'.")
 
@@ -614,6 +625,7 @@ def add_common_params(parser):
 
     parser.add_argument("--nb_core_elec", nargs="+", type=str)
     parser.add_argument("--sim", type=str, default="sim.h5", help="GW/GF2 output file to read density matrix for natural orbital")
+    parser.add_argument("--input_fno", type=str, default="input.h5", help="GW/GF2 output file to read density matrix for natural orbital")
     parser.add_argument("--iter", type=int, default=2, help="GW/GF2 iteration to use")
     parser.add_argument("--ir_file", type=str, help="IR-grid HDF5 file")
     parser.add_argument("--fvo_thresh", type=float, default=1e-6, help="Threshold of occupation to keep for frozen virtual orbitals")
