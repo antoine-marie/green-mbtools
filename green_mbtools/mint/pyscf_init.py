@@ -282,8 +282,8 @@ class pyscf_pbc_init (pyscf_init):
                 for k in range(nk):
                     hf_dm[s, k, :, :] = - 2 * G_tk[-1,s,k,:,:].real
 
-
-        X_k, X_inv_k, S, F, T, hf_dm = comm.orthogonalize(self.args, mydf, X_k, X_inv_k, F, T, hf_dm, S, mf=mf)
+        # TODO replace 0 by mo_coeff
+        X_k, X_inv_k, S, F, T, hf_dm = comm.orthogonalize(self.args, mydf, X_k, X_inv_k, F, T, hf_dm, S, 0, mf=mf)
         # Save data into Green Software package input format.
         comm.save_data(
             self.args, self.cell, mf, self.kmesh, self.ind, self.weight, self.num_ik, self.ir_list, self.conj_list,

@@ -391,6 +391,8 @@ def pct_occ_fno(nat_occ_vir,blocks,thresh):
             cum += block_occ
             nkeep += len(nat_occ_vir[b])
         else:
+            cum += block_occ
+            nkeep += len(nat_occ_vir[b])
             break
 
     return len(nat_occ_vir) - nkeep
@@ -505,12 +507,16 @@ def orthogonalize(args, mydf, X_k, X_inv_k, F, T, hf_dm, S, mo_coeff, mf=None):
             print(nat_occ)
             print("The sum of occupations is ", nat_occ.sum())
             print(f"There are {nvir} virtual orbitals")
-            print(f"To keep only orbitals with occupations larger than 1e-8, the number of orbital to delete is {np.count_nonzero(nat_occ<1e-8)}")
             print(f"To keep only orbitals with occupations larger than 1e-7, the number of orbital to delete is {np.count_nonzero(nat_occ<1e-7)}")
+            print(f"To keep only orbitals with occupations larger than 5e-7, the number of orbital to delete is {np.count_nonzero(nat_occ<5e-7)}")
             print(f"To keep only orbitals with occupations larger than 1e-6, the number of orbital to delete is {np.count_nonzero(nat_occ<1e-6)}")
+            print(f"To keep only orbitals with occupations larger than 5e-6, the number of orbital to delete is {np.count_nonzero(nat_occ<5e-6)}")
             print(f"To keep only orbitals with occupations larger than 1e-5, the number of orbital to delete is {np.count_nonzero(nat_occ<1e-5)}")
+            print(f"To keep only orbitals with occupations larger than 5e-5, the number of orbital to delete is {np.count_nonzero(nat_occ<5e-5)}")
             print(f"To keep only orbitals with occupations larger than 1e-4, the number of orbital to delete is {np.count_nonzero(nat_occ<1e-4)}")
+            print(f"To keep only orbitals with occupations larger than 5e-4, the number of orbital to delete is {np.count_nonzero(nat_occ<5e-4)}")
             print(f"To keep only orbitals with occupations larger than 1e-3, the number of orbital to delete is {np.count_nonzero(nat_occ<1e-3)}")
+            print(f"To keep only orbitals with occupations larger than 5e-3, the number of orbital to delete is {np.count_nonzero(nat_occ<5e-3)}")
             print(f"To keep only orbitals with occupations larger than 1e-2, the number of orbital to delete is {np.count_nonzero(nat_occ<1e-2)}")
 
             # Find degenerate blocks
@@ -563,8 +569,9 @@ def orthogonalize(args, mydf, X_k, X_inv_k, F, T, hf_dm, S, mo_coeff, mf=None):
     T = transform(T, X_k, X_inv_k)
     hf_dm = transform(hf_dm, X_inv_k, X_k)
 
-    S = np.array([np.eye(F.shape[-1], dtype=np.complex128)] * F.shape[1])
-    S = np.array([S] * ns)
+    S = transform(S, X_k, X_inv_k)
+    #S = np.array([np.eye(F.shape[-1], dtype=np.complex128)] * F.shape[1])
+    #S = np.array([S] * ns)
 
     return X_k, X_inv_k, S, F, T, hf_dm
 
