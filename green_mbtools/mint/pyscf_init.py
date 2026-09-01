@@ -249,7 +249,17 @@ class pyscf_pbc_init (pyscf_init):
         if self.args.orth == 'mp2':
 
             print("Reading input file")
-            f = h5py.File(self.args.output_path, 'r')
+            f = h5py.File(self.args.input_fno, 'r')
+            mo_coeff_raw  = f["HF/mo_coeff"][()]
+            # Normalize mo_coeff to (ns, nk, nao, nao).
+            # Molecular RHF/GHF stores (nao, nao); UHF stores (ns, nao, nao).
+            ns = self.args.ns
+            mc = mo_coeff_raw
+            if   mc.ndim == 2:                          mo_coeff = mc[np.newaxis, np.newaxis]
+            elif mc.ndim == 3 and mc.shape[0] == ns:    mo_coeff = mc[:, np.newaxis]
+            elif mc.ndim == 3:                          mo_coeff = mc[np.newaxis]
+            else:                                       mo_coeff = mc
+
             ibz2bz = f["/symmetry/k/ibz2bz"][()]
             bz2ibz = f["/symmetry/k/bz2ibz"][()]
             tr_conj = f["/symmetry/k/tr_conj"][()]
@@ -272,7 +282,6 @@ class pyscf_pbc_init (pyscf_init):
             del rG_tk
 
             mu         = f["iter" + str(it) + "/mu"][()]
-            print(it,mu)
             nts        = G_tk.shape[0]
             f.close()
 
@@ -282,8 +291,16 @@ class pyscf_pbc_init (pyscf_init):
                 for k in range(nk):
                     hf_dm[s, k, :, :] = - 2 * G_tk[-1,s,k,:,:].real
 
-        # TODO replace 0 by mo_coeff
-        X_k, X_inv_k, S, F, T, hf_dm = comm.orthogonalize(self.args, mydf, X_k, X_inv_k, F, T, hf_dm, S, 0, mf=mf)
+        if self.args.orth == "none":
+            X_k, X_inv_k, S, F, T, hf_dm = comm.orthogonalize(self.args, mydf, X_k, X_inv_k, F, T, hf_dm, S, mo_coeff=None, mf=mf,stars=None)
+        else:
+            tr_kstruct = self.cell.make_kpts(self.args.nk, scaled_center=self.args.center,space_group_symmetry=False, time_reversal_symmetry=True)
+            stars = tr_kstruct.stars
+            if self.args.orth == "mp2":
+                X_k, X_inv_k, S, F, T, hf_dm = comm.orthogonalize(self.args, mydf, X_k, X_inv_k, F, T, hf_dm, S, mo_coeff, mf=mf,stars=stars)
+            else:
+                X_k, X_inv_k, S, F, T, hf_dm = comm.orthogonalize(self.args, mydf, X_k, X_inv_k, F, T, hf_dm, S, mo_coeff=None, mf=mf,stars=stars)           
+
         # Save data into Green Software package input format.
         comm.save_data(
             self.args, self.cell, mf, self.kmesh, self.ind, self.weight, self.num_ik, self.ir_list, self.conj_list,
@@ -598,6 +615,7 @@ class pyscf_mol_init (pyscf_init):
             mo_coeff_raw  = f["HF/mo_coeff"][()]
             # Normalize mo_coeff to (ns, nk, nao, nao).
             # Molecular RHF/GHF stores (nao, nao); UHF stores (ns, nao, nao).
+            ns = self.args.ns
             mc = mo_coeff_raw
             if   mc.ndim == 2:                          mo_coeff = mc[np.newaxis, np.newaxis]
             elif mc.ndim == 3 and mc.shape[0] == ns:    mo_coeff = mc[:, np.newaxis]

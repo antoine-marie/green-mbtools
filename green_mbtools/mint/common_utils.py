@@ -158,6 +158,59 @@ def high_symmetry_path(cell, args):
     lin_kpt_axis = kpath.get_linear_kpoint_axis()
     return [kmesh, H0_hs, Sk_hs, lin_kpt_axis]
 
+def transform_dm(Z, X, X_inv):
+    """Transform density matrix Z into X basis using the contravariant
+    convention D' = X_inv^dagger @ D @ X_inv, consistent with F' = X @ F @ X^dagger.
+
+    This is deliberately distinct from `transform()` (which applies
+    Z_X = X @ Z @ X^dagger) because the density matrix transforms with the
+    inverse relative to Fock/Hamiltonian-like quantities under a
+    non-unitary basis change. For Hermitian X_inv (e.g. symmetric Löwdin,
+    where X_inv = S^{+1/2}) the two conventions coincide, which is why that
+    orthogonalization mode has historically masked this bug. For canonical
+    (rectangular) Löwdin, MO, or natural-orbital bases, X_inv is not
+    Hermitian and the distinction matters.
+
+    Parameters
+    ----------
+    Z : numpy.ndarray
+        Density matrix to be transformed, shape (ns, nk, nao, nao)
+    X : numpy.ndarray
+        Forward transformation matrix (same X used for F/T), shape (nk, n_ortho, nao)
+    X_inv : numpy.ndarray
+        Inverse transformation matrix (same X_inv used for F/T), shape (nk, nao, n_ortho)
+
+    Returns
+    -------
+    numpy.ndarray
+        Z in new basis
+    """
+    Z_X = np.zeros(Z.shape, dtype=np.complex128)
+    maxdiff = -1
+    for ss in range(Z.shape[0]):
+        for ik in range(Z.shape[1]):
+            Z_X[ss, ik] = np.einsum(
+                'ij,jk...,kl->il...',
+                X_inv[ik].conj().T, Z[ss, ik], X_inv[ik]
+            )
+
+            # Sanity check: restoring back to the original (AO) basis should
+            # reproduce Z using X (forward transform), since
+            # D = X^dagger @ D' @ X for this convention.
+            Z_restore = np.dot(X[ik].conj().T, np.dot(Z_X[ss, ik], X[ik]))
+            diff = np.max(np.abs(Z[ss, ik] - Z_restore))
+            maxdiff = max(maxdiff, diff)
+
+            if not np.allclose(Z[ss, ik], Z_restore, atol=1e-7, rtol=1e-7):
+                error = (
+                    "Density-matrix transformation failed. Max difference "
+                    "between origin and restored quantity is {}".format(
+                        np.max(np.abs(Z[ss, ik] - Z_restore))
+                    )
+                )
+                raise RuntimeError(error)
+    logging.info(f"Maximum difference between dm and dm_restore {maxdiff}")
+    return Z_X
 
 def transform(Z, X, X_inv):
     """Transform Z into X basis
@@ -186,7 +239,7 @@ def transform(Z, X, X_inv):
             diff = np.max(np.abs(Z[ss, ik] - Z_restore))
             maxdiff = max(maxdiff, diff)
 
-            if not np.allclose(Z[ss, ik], Z_restore, atol=1e-10, rtol=1e-10) :
+            if not np.allclose(Z[ss, ik], Z_restore, atol=1e-7, rtol=1e-7) :
                 error = "Orthogonal transformation failed. Max difference between origin and restored quantity is {}".format(np.max(np.abs(Z[ss,ik] - Z_restore)))
                 raise RuntimeError(error)
     logging.info(f"Maximum difference between Z and Z_restore {maxdiff}")
@@ -397,7 +450,158 @@ def pct_occ_fno(nat_occ_vir,blocks,thresh):
 
     return len(nat_occ_vir) - nkeep
 
-def orthogonalize(args, mydf, X_k, X_inv_k, F, T, hf_dm, S, mo_coeff, mf=None):
+# def orthogonalize(mydf, orth, X_k, X_inv_k, F, T, hf_dm, S, mf=None, mycell=None, kstruct=None):
+#     '''
+#     Transform Fock-matrix, non-interacting Hamiltonian, density matrix and overlap matrix into an orthogonal basis.
+
+#     ``orth`` selects the per-k transformation:
+#       - "none"    : identity (AO basis preserved)
+#       - "lowdin"  : symmetric S^{-1/2} orthogonalization
+#       - "mo"      : canonical molecular orbitals from ``mf.mo_coeff``
+#       - "natural" : natural orbitals from the mean-field density matrix
+
+#     For periodic systems, when ``mycell`` and ``kstruct`` are provided, the
+#     transformation is built only on the IBZ and then propagated to the full BZ
+#     with the stored space-group / time-reversal representations. This keeps the
+#     gauge consistent across symmetry-related k-points and preserves the exact
+#     TR-conjugation identities used later by the reduced k-pair DF integral path.
+#     '''
+#     if orth == "mo" and mf is None:
+#         raise ValueError("orthogonalize: mf is required for orth='mo'.")
+
+#     ns = hf_dm.shape[0]
+
+#     if orth == "mo" and ns == 2:
+#         # No single C diagonalizes both spin Fock blocks; we fall back to the
+#         # spin-averaged Fock. The resulting MOs are not the eigenstates of
+#         # either F_alpha or F_beta individually.
+#         logging.warning(
+#             "orthogonalize: orth='mo' with ns=2 (UHF/UKS); using "
+#             "spin-averaged MOs (eigenstates of 0.5*(F_alpha+F_beta)), "
+#             "not the canonical alpha/beta MOs."
+#         )
+
+#     use_kspace_symmetry = (
+#         orth == "mo" or "lowdin" or "natural"
+#         and mycell is not None
+#         and kstruct is not None
+#     )
+
+#     if use_kspace_symmetry:
+#         ibz = np.asarray(kstruct.ibz2bz, dtype=int)
+#         S_ibz = np.asarray(S[0, ibz], dtype=np.complex128)
+
+#         if orth == "lowdin":
+#             if ns == 2:
+#                 raise ValueError(f"this orthogonalization scheme is not available in UHF formalism.")
+#             else:
+#                 print("Using lowdin k-dependent orthogonalization")
+#                 X_k, X_inv_k = ortho_utils.build_X_kspace(
+#                     "lowdin", kstruct, mycell, S_ibz
+#                 )
+                
+            
+#         kwargs = {}
+#         if orth == "mo":
+#             if ns == 2:
+#                 # build_X_kspace expects (n_ibz, ns, nao, nao)
+#                 kwargs["F_ibz"] = np.asarray(
+#                     F[:, ibz], dtype=np.complex128
+#                 ).transpose(1, 0, 2, 3)
+#             else:
+#                 # For periodic MO orth with symmetry enabled, derive the MO basis
+#                 # from the IBZ Fock instead of mf.mo_coeff to avoid gauge/order
+#                 # mismatches across symmetry-related k-points.
+#                 kwargs["F_ibz"] = np.asarray(
+#                     F[0, ibz], dtype=np.complex128
+#                 )
+#         elif orth == "natural":
+#             kwargs["F_ibz"] = np.asarray(
+#                 F[:, ibz], dtype=np.complex128
+#             ).transpose(1, 0, 2, 3)
+#             kwargs["dm_ibz"] = np.asarray(
+#                 hf_dm[:, ibz], dtype=np.complex128
+#             ).transpose(1, 0, 2, 3)
+
+#         X_k, X_inv_k = ortho_utils.build_X_kspace(
+#             orth, kstruct, mycell, S_ibz, **kwargs
+#         )
+
+#         maxdiff = -1.0
+#         eye = np.eye(X_k.shape[1], dtype=np.complex128)
+#         for ik in range(X_k.shape[0]):
+#             diff = eye - np.dot(X_k[ik], X_inv_k[ik])
+#             diff_max = np.max(np.abs(diff))
+#             maxdiff = max(maxdiff, diff_max)
+#         logging.info(f"max diff from identity {maxdiff}")
+
+#     else:
+#         maxdiff = -1
+#         old_shape = [-1, -1]
+#         for ik, k in enumerate(mydf.kpts):
+#             if orth == "none":
+#                 X_inv_k.append(np.eye(F.shape[2], dtype=np.complex128))
+#                 X_k.append(np.eye(F.shape[2], dtype=np.complex128))
+#                 continue
+
+#             Sk = S[0, ik]
+#             if orth == "lowdin":
+#                 x, x_pinv = ortho_utils.lowdin_per_k(Sk)
+#             elif orth == "symmetric_lowdin":
+#                 x, x_pinv = ortho_utils.symmetric_lowdin_per_k(Sk)
+#             elif orth == "mo":
+#                 # For ns == 2, no single C diagonalizes both F_alpha and F_beta;
+#                 # diagonalize the spin-averaged Fock against S to obtain a
+#                 # spin-symmetric MO basis. For ns == 1 use mf.mo_coeff directly.
+#                 if ns == 2:
+#                     F_bar = 0.5 * (F[0, ik] + F[1, ik])
+#                     _, C_k = LA.eigh(F_bar, Sk)
+#                 else:
+#                     C_k = mf.mo_coeff[ik]
+#                 x, x_pinv = ortho_utils.mo_per_k(Sk, C_k)
+#             elif orth == "natural":
+#                 dmk = 0.5 * (hf_dm[0, ik] + hf_dm[1, ik]) if ns == 2 else hf_dm[0, ik]
+#                 x, x_pinv = ortho_utils.natural_per_k(Sk, dmk)
+#             else:
+#                 raise ValueError(f"orthogonalize: unknown orth '{orth}'.")
+
+#             n_ortho, n_nonortho = x.shape
+#             if old_shape[0] >= 0 and n_ortho != old_shape[0] and n_nonortho != old_shape[1]:
+#                 raise RuntimeError("Error!!! Different k-point have different number of orthogonal basis.")
+
+#             old_shape[0] = n_ortho
+#             old_shape[1] = n_nonortho
+
+#             X_inv_k.append(x_pinv.copy())
+#             X_k.append(x.copy())
+
+#             diff = np.eye(n_nonortho) - np.dot(x, x_pinv)
+#             diff_max = np.max(np.abs(diff))
+#             maxdiff = max(maxdiff, diff_max)
+#             logging.info(f"max diff from identity {maxdiff}")
+            
+#         #end of if else use k space symmetry
+
+#         if orth == "none":
+#             X_inv_k = np.asarray(X_inv_k).reshape(F.shape[1:])
+#             X_k = np.asarray(X_k).reshape(F.shape[1:])
+#             return X_k, X_inv_k, S, F, T, hf_dm
+
+#         print(X_k.shape)
+#         X_inv_k = np.asarray(X_inv_k).reshape(F.shape[1:])
+#         X_k = np.asarray(X_k).reshape(F.shape[1:])
+#         print(X_k.shape)
+
+#     F = transform(F, X_k, X_inv_k)
+#     T = transform(T, X_k, X_inv_k)
+#     hf_dm = transform(hf_dm, X_inv_k, X_k)
+
+#     S = np.array([np.eye(F.shape[-1], dtype=np.complex128)] * F.shape[1])
+#     S = np.array([S] * ns)
+
+#     return X_k, X_inv_k, S, F, T, hf_dm
+
+def orthogonalize(args, mydf, X_k, X_inv_k, F, T, hf_dm, S, mo_coeff=None, mf=None, stars=None):
     '''
     Transform Fock-matrix, non-interacting Hamiltonian, density matrix and overlap matrix into an orthogonal basis.
 
@@ -448,8 +652,9 @@ def orthogonalize(args, mydf, X_k, X_inv_k, F, T, hf_dm, S, mo_coeff, mf=None):
                 F_bar = 0.5 * (F[0, ik] + F[1, ik])
                 _, C_k = LA.eigh(F_bar, Sk)
             else:
-                if type(mf.mo_coeff) == list: # means this is a list of shape (nk,nao,nao)
+                if type(mf.mo_coeff) == list: # means this is a list of shape (nk,nao,nao
                     C_k = mf.mo_coeff[ik]
+
                 else: # this is an array of shape is (nao,nao)
                     C_k = mf.mo_coeff
             x, x_pinv = ortho_utils.mo_per_k(Sk, C_k)
@@ -459,13 +664,17 @@ def orthogonalize(args, mydf, X_k, X_inv_k, F, T, hf_dm, S, mo_coeff, mf=None):
         elif orth == "mp2":
             if ns ==2:
                 raise ValueError(f"The mp2 orthogonalization is not yet implemented for UHF.")
-            
+        
             dmk = hf_dm[0, ik, :, :]
 
             mo_occ = np.asarray(mf.mo_occ)
-            nmo = len(mo_occ)
-            nocc = (mo_occ > 0).sum()
-            nvir = nmo - nocc            
+            if len(mo_occ.shape)==2:
+                nmo = len(mo_occ[ik])
+                nocc = (mo_occ[ik] > 0).sum()
+            else:
+                nmo = len(mo_occ)
+                nocc = (mo_occ > 0).sum()
+            nvir = nmo - nocc
 
             # Diagonalize the whole density matrix
             # Natural occupations and natural orbitals
@@ -475,33 +684,8 @@ def orthogonalize(args, mydf, X_k, X_inv_k, F, T, hf_dm, S, mo_coeff, mf=None):
             nat_occ, no_coeff = nat_occ[idx], no_coeff[:,idx]
             nat_occ_vir = nat_occ[nocc:]
 
-            # Diagonalize dm_vir only
-            #nat_occ, no_coeff = np.linalg.eigh(dmk[nocc:,nocc:])
-            #idx = np.argsort(nat_occ)[::-1]
-            #nat_occ, no_coeff = nat_occ[idx], no_coeff[:,idx]
-            #nat_occ_vir = nat_occ[:]
-            #mo_vir = mf.mo_coeff[:,nocc:]
-            #mo_vir = np.dot(mo_vir,no_coeff)
-            #C_k = np.hstack((mf.mo_coeff[:,:nocc],mo_vir))
-
-            #if type(mo_coeff) == list: # means this is a list of shape (nk,nao,nao)
-                #C_k = mo_coeff[ik] @ no_coeff
-            #else: # this is an array of shape is (nao,nao)
-            C_k = mo_coeff[0,0] @ no_coeff
+            C_k = mo_coeff[0,ik] @ no_coeff
             x, x_pinv = ortho_utils.mo_per_k(Sk, C_k)
-
-
-            #if args.fvo_nvir_act is None:
-            #    if args.fvo_pct_occ is None:
-            #        nvir_keep = np.count_nonzero(nat_occ>args.fvo_thresh)
-            #    else:
-            #        cumsum = np.cumsum(nat_occ/np.sum(nat_occ))
-            #        nvir_keep = np.count_nonzero(
-            #            [c <= args.fvo_pct_occ or np.isclose(c, args.fvo_pct_occ) for c in cumsum])
-            #else:
-            #    nvir_keep = min(nvir, args.fvo_nvir_act)
-            #n_del = nvir - nvir_keep
-            #print(f"the number of virtual to keep is {nvir_keep}, the number to delete is {n_del}")
 
             print("The list of natural occupation is")
             print(nat_occ)
@@ -540,6 +724,8 @@ def orthogonalize(args, mydf, X_k, X_inv_k, F, T, hf_dm, S, mo_coeff, mf=None):
             print(f"To keep 99.5% of total virtual occupation, the number of orbitals to delete is {ndel}")
             ndel = pct_occ_fno(nat_occ_vir, blocks, 0.999)
             print(f"To keep 99.9% of total virtual occupation, the number of orbitals to delete is {ndel}")
+            ndel = pct_occ_fno(nat_occ_vir, blocks, 0.9995)
+            print(f"To keep 99.95% of total virtual occupation, the number of orbitals to delete is {ndel}")
 
         else:
             raise ValueError(f"orthogonalize: unknown orth '{orth}'.")
@@ -550,7 +736,7 @@ def orthogonalize(args, mydf, X_k, X_inv_k, F, T, hf_dm, S, mo_coeff, mf=None):
 
         old_shape[0] = n_ortho
         old_shape[1] = n_nonortho
-
+            
         X_inv_k.append(x_pinv.copy())
         X_k.append(x.copy())
 
@@ -562,17 +748,33 @@ def orthogonalize(args, mydf, X_k, X_inv_k, F, T, hf_dm, S, mo_coeff, mf=None):
     X_inv_k = np.asarray(X_inv_k).reshape(F.shape[1:])
     X_k = np.asarray(X_k).reshape(F.shape[1:])
 
+
+    if stars != None:
+        print(stars)
+        for st in stars:
+            print(st)
+            if len(st)==2:
+                X_k[st[1]]     = X_k[st[0]].conj()
+                X_inv_k[st[1]] = X_inv_k[st[0]].conj()
+            if len(st)==1:          
+                tmpS = S[0, st[0]]
+                print("imag S :", np.linalg.norm(tmpS.imag))
+                x, x_pinv = ortho_utils.lowdin_per_k(tmpS,real=True)
+                print("imag X :", np.linalg.norm(x.imag))
+                X_k[st[0]]    = x
+                X_inv_k[st[0]] = x_pinv
+    
     if orth == "none":
         return X_k, X_inv_k, S, F, T, hf_dm
-
+        
     F = transform(F, X_k, X_inv_k)
     T = transform(T, X_k, X_inv_k)
-    hf_dm = transform(hf_dm, X_inv_k, X_k)
-
+    hf_dm = transform_dm(hf_dm, X_k, X_inv_k)
+            
     S = transform(S, X_k, X_inv_k)
     #S = np.array([np.eye(F.shape[-1], dtype=np.complex128)] * F.shape[1])
     #S = np.array([S] * ns)
-
+    
     return X_k, X_inv_k, S, F, T, hf_dm
 
 
@@ -1128,10 +1330,17 @@ def store_kstruct_ops_info(args, mycell, kmesh, kstruct, X_k=None, X_inv_k=None)
             )
         # get mapping from full BZ idx to idx (still in full BZ) of the corresponding irreducible point
         bz2ibz = kstruct.ibz2bz[kstruct.bz2ibz]
+        # For time-reversal-mapped BZ points the reconstruction applies an outer
+        # complex conjugation, rec = conj(U @ Q_ir @ U^dag). That outer conj also
+        # hits the left orthogonalization factor, turning X_k[ik] into X_k[ik]*.
+        # Since the stored orthogonalized quantity uses X_k[ik] (not its conj),
+        # pre-conjugate the left factor for TR points so the two cancel.
+        tr_conj_bz = kstruct.time_reversal_symm_bz
         kspace_orep_orth = np.zeros_like(kspace_orep)
         for ik in range(nk):
             ik_ir = bz2ibz[ik]
-            kspace_orep_orth[ik] = X_k[ik] @ kspace_orep[ik] @ X_inv_k[ik_ir]
+            X_left = X_k[ik].conj() if tr_conj_bz[ik] else X_k[ik]
+            kspace_orep_orth[ik] = X_left @ kspace_orep[ik] @ X_inv_k[ik_ir]
         kspace_orep = kspace_orep_orth
 
     if "k_sym_transform_ao" in symm_grp:

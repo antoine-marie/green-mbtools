@@ -3,7 +3,7 @@ import scipy.linalg as LA
 from .symmetry_utils import get_representation, get_spinor_representation
 
 
-def lowdin_per_k(Sk, tol=1e-9):
+def lowdin_per_k(Sk, tol=1e-9,real=False):
     '''
     Symmetric (Löwdin) S^{-1/2} orthogonalization for a single k-point.
 
@@ -15,11 +15,20 @@ def lowdin_per_k(Sk, tol=1e-9):
 
     Eigenvalues of ``Sk`` below ``tol`` are discarded.
     '''
-    s_ev, s_eb = np.linalg.eigh(Sk)
-    istart = s_ev.searchsorted(tol)
-    s_sqrtev = np.sqrt(s_ev[istart:])
-    x_pinv = s_eb[:, istart:] * s_sqrtev
-    x = (s_eb[:, istart:].conj() * (1.0 / s_sqrtev)).T
+    if real:
+        s_ev, s_eb = np.linalg.eigh(Sk.real)
+    else:
+        s_ev, s_eb = np.linalg.eigh(Sk)
+    print("These are the eigenvalues")
+    print(s_ev)
+    print("imag s_eb :", np.linalg.norm(s_eb.imag))
+    kept = s_ev >= tol
+    s_sqrt = np.zeros_like(s_ev)
+    s_inv_sqrt = np.zeros_like(s_ev)
+    s_sqrt[kept] = np.sqrt(s_ev[kept])
+    s_inv_sqrt[kept] = 1.0 / np.sqrt(s_ev[kept])
+    x_pinv = s_eb[:, :] * s_sqrt
+    x = (s_eb[:, :].conj() * s_inv_sqrt).T
     return x, x_pinv
 
 
