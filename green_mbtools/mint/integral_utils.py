@@ -17,6 +17,7 @@ from pyscf.pbc.df.rsdf_builder import _RSGDFBuilder
 from pyscf.pbc.df.gdf_builder import _CCGDFBuilder
 import scipy.linalg as LA
 
+from . import common_utils as comm
 from . import kpt_utils
 
 # Linear dep threshold for J2C metric eigenvalues
@@ -314,7 +315,7 @@ def integrals_grid(mycell, kmesh):
     return kptij_idx, kij_conj, kij_trans, kpair_irre_list, num_kpair_stored, kptis, kptjs
 
 
-def compute_integrals(args, mycell, mydf, kmesh, nao, X_k=None, basename = "df_int", cderi_name="cderi.h5", keep=True, keep_after=False, cderi_name2="cderi_ewald.h5"):
+def compute_integrals(args, mycell, mydf, kmesh, nao, X_k=None, basename = "df_int", cderi_name="cderi.h5", keep=True, keep_after=False, cderi_name2="cderi_ewald.h5", Y=None, Y_inv=None):
 
     kptij_idx, kij_conj, kij_trans, kpair_irre_list, num_kpair_stored, kptis, kptjs = integrals_grid(mycell, kmesh)
 
@@ -383,6 +384,12 @@ def compute_integrals(args, mycell, mydf, kmesh, nao, X_k=None, basename = "df_i
     rotate = (X_k is not None and len(X_k) == kmesh.shape[0]
               and args.orth != "none")
 
+    naf_rotate = (args.aux_orth == "naf")
+    #Y, Y_inv = None, None
+    if naf_rotate and Y is None:
+        #auxcell.build()
+        Y, Y_inv = comm.build_naf_transform(mydf, args, auxcell)
+
     for i in kpair_irre_list:
         k1 = kptis[i]
         k2 = kptjs[i]
@@ -401,6 +408,7 @@ def compute_integrals(args, mycell, mydf, kmesh, nao, X_k=None, basename = "df_i
             buffer[cnt% chunk_size, s1:s1+Lpq.shape[0], :, :] = Lpq[0:Lpq.shape[0],:,:]
             # s1 = NQ at maximum.
             s1 += Lpq.shape[0]
+            
         if apply_correction and np.allclose(k1, k2) :
             s1 = 0
             for XXX in correction_df.sr_loop((k1,k1), max_memory=4000, compact=False):
@@ -412,6 +420,13 @@ def compute_integrals(args, mycell, mydf, kmesh, nao, X_k=None, basename = "df_i
                 buffer[cnt% chunk_size, s1:s1+Lpq.shape[0], :, :] = Lpq[0:Lpq.shape[0],:,:]
                 # s1 = NQ at maximum.
                 s1 += Lpq.shape[0]
+
+        # Rotate the fully-assembled auxiliary index into the NAF basis
+        if naf_rotate:
+            buffer[cnt % chunk_size] = np.einsum(
+                "QP,Pab->Qab", Y, buffer[cnt % chunk_size], optimize=True
+            )
+
         cnt += 1
 
         # if reach chunk size: (cnt-chunk_size) equals to chunk id.
