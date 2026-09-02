@@ -411,7 +411,24 @@ def compute_integrals(args, mycell, mydf, kmesh, nao, X_k=None, basename = "df_i
                     Lpq = _rotate_Lpq(Lpq, X_i, X_j)
                 buffer[cnt% chunk_size, s1:s1+Lpq.shape[0], :, :] = Lpq[0:Lpq.shape[0],:,:]
                 # s1 = NQ at maximum.
-                s1 += Lpq.shape[0]
+                s1 += Lpq.shape[0]        
+        # print("Let's do some tests for NAF")
+        # Lpq_tmp = np.zeros((NQ, nao * nao), dtype=complex)
+        # print(buffer[cnt].shape)
+        # Lpq_tmp = buffer[cnt].reshape(NQ, nao * nao)
+        # print("Reshape the density fitted integral tensor:", Lpq_tmp.shape)
+        # M = np.einsum("pr,qr->pq", Lpq_tmp, Lpq_tmp.conj())
+        # print("Build M. Shape:", M.shape)
+        # eigval, eigvec = np.linalg.eigh(M)
+        # idx = np.argsort(eigval)[::-1]
+        # eigval, eigvec = eigval[idx], eigvec[:,idx]
+        # buffer[cnt] = np.einsum("rp,rq->qp", Lpq_tmp, eigvec).reshape(NQ, nao, nao)
+        # #print(eigval)
+        # print("There are", len(eigval[eigval<0.01]),"eigenvalues below 10^-2")
+        # print("There are", len(eigval[eigval<0.001]),"eigenvalues below 10^-3")
+        # print("There are", len(eigval[eigval<0.0001]),"eigenvalues below 10^-4")
+        # print("There are", len(eigval[eigval<0.00001]),"eigenvalues below 10^-5")
+        # print("End of the test")
         cnt += 1
 
         # if reach chunk size: (cnt-chunk_size) equals to chunk id.

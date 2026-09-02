@@ -306,8 +306,14 @@ def parse_geometry(g):
         res = g
     return res
 
+def parse_core(values):
+    result = []
+    for v in values:
+        key, num = v.split(",")
+        result.append((key, int(num)))
+    return result
 
-def save_data(args, mycell, mf, kmesh, ind, weight, num_ik, ir_list, conj_list, Nk, nk, NQ, F, S, T, hf_dm, madelung, Zs, last_ao):
+def save_data(args, mycell, mf, kmesh, ind, weight, num_ik, ir_list, conj_list, Nk, nk, NQ, F, S, T, hf_dm, madelung, Zs, last_ao, ncore, core_reordering):
     '''
     Save data in Green/WeakCoupling format into a hdf5 file
     '''
@@ -351,6 +357,8 @@ def save_data(args, mycell, mf, kmesh, ind, weight, num_ik, ir_list, conj_list, 
     nk_arr = np.atleast_1d(np.array(args.nk, dtype=int))
     inp_data["symmetry/k/nk_list"] = np.array([nk_arr[0]]*3, dtype=int) if nk_arr.size == 1 else nk_arr
     inp_data["params/NQ"] = NQ
+    inp_data["params/ncore"] = ncore
+    inp_data["params/core_reordering"] = core_reordering
     inp_data.attrs["__green_version__"] = __version__
     inp_data.close()
     chk.save(args.output_path, "Cell", mycell.dumps())
@@ -476,6 +484,13 @@ def orthogonalize(mydf, orth, X_k, X_inv_k, F, T, hf_dm, S, sym_kstruct=None, my
         else:
             kw["dm_ibz"] = np.asarray(hf_dm)[0, ibz]               # (n_ibz, n, n)
             kw["F_ibz"] = np.asarray(F)[0, ibz]
+    elif orth == "fno":
+        if ns ==2:
+            raise ValueError(f"The fno orthogonalization is not yet implemented for UHF.")
+        else:
+            kw["dm_ibz"] = np.asarray(hf_dm[0]) # (n_ibz, n, n), the density matrix read from input_fno is already in the ibz
+            kw["F_ibz"] = np.asarray(F)[0, ibz]
+
     kw["spinor"] = spinor
     X_k, X_inv_k = ortho_utils.build_X_kspace(
         orth, sym_kstruct, mycell, S_ibz, **kw)
@@ -524,7 +539,7 @@ def add_common_params(parser):
     parser.add_argument("--output_path", type=str, default="input.h5", help="output file with initial data")
     parser.add_argument(
         "--orth", type=str, default="none",
-        choices=["none", "lowdin", "symmetric_lowdin", "mo", "natural", "0", "1"],
+        choices=["none", "lowdin", "symmetric_lowdin", "mo", "natural", "0", "1","fno"],
         help=(
             "Orbital basis for stored quantities: "
             "'none' = keep AO basis (legacy '0'); "
@@ -532,6 +547,7 @@ def add_common_params(parser):
             "'symmetric_lowdin' = Hermitian Löwdin S^{-1/2}; "
             "'mo' = canonical MOs from mean-field; "
             "'natural' = natural orbitals from mean-field density matrix."
+            "'fno' = fno virtual orbitals (this orth requires input_fno file)."
         ),
     )
     parser.add_argument("--beta", type=float, default=None, help="Emperical parameter for even-Gaussian auxiliary basis")
@@ -560,6 +576,9 @@ def add_common_params(parser):
         help="Use eigenvalue decomposition for j2c factors during DF build. Set false to force Cholesky-based path."
     )
 
+    parser.add_argument("--nb_core_elec", nargs="+", type=str)
+    parser.add_argument("--input_fno", type=str, default=None, help="GW/GF2 output file to read density matrix for natural orbital")
+    parser.add_argument("--iter_fno", type=int, default=2, help="GW/GF2 iteration to use")
 
 def add_pbc_params(parser):
     '''
@@ -611,7 +630,9 @@ def init_mol_params(params=None):
     args.a = [[1,0,0],[0,1,0],[0,0,1]]
     args.nk = [1, 1, 1]
     args.shift =  [0.,0.,0.]
-    args.center = [0.,0.,0.]
+    args.center = [0.,0.,0.]    
+    if args.nb_core_elec is not None:
+        args.nb_core_elec = parse_core(args.nb_core_elec)
     return args
 
 

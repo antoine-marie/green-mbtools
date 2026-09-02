@@ -13,7 +13,7 @@ from . import integral_utils as int_utils
 from . import symmetry_utils as symm_utils
 from ..pesto import ft
 
-
+from green_mbtools.pesto import mb
 
 class pyscf_init:
     '''Initialization class for Green project
@@ -47,7 +47,96 @@ class pyscf_init:
         if self.args.max_iter is None:
             self.args.max_iter = 100
         self.cell = self.cell_object()
-        
+
+    def init_core(self):
+        '''
+        This method computes the number of core orbitals for this system.
+        It also returns a reordering list that allows to go from the pyscf AO ordering to a core + valence ordering.
+        The number of core orbitals for different types of atoms can be given as an argument (see add_common_params).
+        '''
+        list_atom = self.cell.atom
+        # print("there are ", self.cell.natm, " atoms")
+        # print("there are ", self.cell.nao_nr(), " basis functions")
+        # print("there are ", self.cell.nbas, " shell of basis")
+        # print("the list of atom charges are", self.cell.atom_charges())
+        # print("here is the list of atoms and basis functions number")
+        basis_funcs_per_atom = [0] * self.cell.natm
+        for atm_idx in range(self.cell.natm):
+            shell_ids = self.cell.atom_shell_ids(atm_idx)
+            n_basis_funcs = 0
+            for shell_id in shell_ids:
+                l = self.cell.bas_angular(shell_id)
+                nctr = self.cell.bas_nctr(shell_id)
+                # For spherical basis: (2l+1) * nctr basis functions per shell
+                n_basis_funcs += (2*l + 1) * nctr
+
+            atom_symbol = self.cell.atom_symbol(atm_idx)
+            print(f"{atom_symbol}: {self.cell.atom_nshells(atm_idx)} shells, {n_basis_funcs} basis functions")
+
+            basis_funcs_per_atom[atm_idx] = n_basis_funcs
+
+        # print(basis_funcs_per_atom)    
+        sph_label = self.cell.sph_labels()
+        # print("the full list of orbitals is",sph_label)
+
+        increasing_ordering = ['1s', '2s',  '2px', '2py', '2pz', '3s', '3px', '3py', '3pz', '4s', '3dxy', '3dyz', '3dz^2', '3dxz', '3dx2-y2', '4px', '4py', '4pz', '5s', '4dxy', '4dyz', '4dz^2', '4dxz', '4dx2-y2', '5px', '5py', '5pz', '6s', '4f-3', '4f-2', '4f-1', '4f+0', '4f+1', '4f+2', '4f+3', '5dxy', '5dyz', '5dz^2 ', '5dxz', '5dx2-y2', '6px', '6py', '6pz', '7s', '5f-3', '5f-2', '5f-1', '5f+0', '5f+1', '5f+2', '5f+3', '6dxy', '6dyz', '6dz^2', '6dxz', '6dx2-y2',  '7px', '7py', '7pz']
+        default_nb_core_elec = {
+            # Period 1
+            "H": 0, "He": 0,
+            # Period 2 (core = He 2)
+            "Li": 2, "Be": 2, "B": 2, "C": 2, "N": 2, "O": 2, "F": 2, "Ne": 2,
+            # Period 3 (core = Ne 10)
+            "Na": 10, "Mg": 10, "Al": 10, "Si": 10, "P": 10, "S": 10, "Cl": 10, "Ar": 10,
+            # Period 4 (core = Ar 18)
+            "K": 18, "Ca": 18, "Sc": 18, "Ti": 18, "V": 18, "Cr": 18, "Mn": 18,"Fe": 18, "Co": 18, "Ni": 18, "Cu": 18, "Zn": 18,"Ga": 18, "Ge": 18, "As": 18, "Se": 18, "Br": 18, "Kr": 18,
+            # Period 5 (core = Kr 36)
+            "Rb": 36, "Sr": 36, "Y": 36, "Zr": 36, "Nb": 36, "Mo": 36, "Tc": 36,"Ru": 36, "Rh": 36, "Pd": 36, "Ag": 36, "Cd": 36,"In": 36, "Sn": 36, "Sb": 36, "Te": 36, "I": 36, "Xe": 36,
+            # Period 6 (core = Xe 54)
+            "Cs": 54, "Ba": 54,"La": 54, "Ce": 54, "Pr": 54, "Nd": 54, "Pm": 54, "Sm": 54, "Eu": 54,"Gd": 54, "Tb": 54, "Dy": 54, "Ho": 54, "Er": 54, "Tm": 54, "Yb": 54, "Lu": 54,"Hf": 54, "Ta": 54, "W": 54, "Re": 54, "Os": 54, "Ir": 54, "Pt": 54,"Au": 54, "Hg": 54,"Tl": 54, "Pb": 54, "Bi": 54, "Po": 54, "At": 54, "Rn": 54,
+            # Period 7 (core = Rn 86)
+            "Fr": 86, "Ra": 86,"Ac": 86, "Th": 86, "Pa": 86, "U": 86, "Np": 86, "Pu": 86, "Am": 86,"Cm": 86, "Bk": 86, "Cf": 86, "Es": 86, "Fm": 86, "Md": 86, "No": 86, "Lr": 86,"Rf": 86, "Db": 86, "Sg": 86, "Bh": 86, "Hs": 86, "Mt": 86, "Ds": 86,"Rg": 86, "Cn": 86,"Nh": 86, "Fl": 86, "Mc": 86, "Lv": 86, "Ts": 86, "Og": 86,
+}
+
+        # Read input to change the default size of core
+        if self.args.nb_core_elec is not None:
+            for atom, n_elec_core in self.args.nb_core_elec:
+                default_nb_core_elec[atom] = n_elec_core
+
+        list_core_idx = []
+        list_val_idx = []
+        count = 0
+        for atm_idx in range(self.cell.natm):
+            # print("this is atom number ", atm_idx)
+            # print("its symbol is ", self.cell.atom_symbol(atm_idx))
+            # print("it has ", basis_funcs_per_atom[atm_idx], "basis functions")
+            tmp_basis = sph_label[count:count+basis_funcs_per_atom[atm_idx]]
+            for i in range(len(tmp_basis)):
+                tmp_basis[i] = tmp_basis[i][-7:].strip()
+            # print("its basis functions are ", tmp_basis)
+
+            size_core = default_nb_core_elec[self.cell.atom_symbol(atm_idx)]
+            # print("its core has ", size_core, " electrons")
+            # print("the core orbitals are ", increasing_ordering[:size_core//2])
+            # Positions of the core orbitals inside the AO
+            found_positions = [tmp_basis.index(x.strip()) + count for x in increasing_ordering[:size_core//2]]
+            # Positions of the valence orbitals inside the AO
+            not_found_positions = [i + count for i in range(len(tmp_basis)) if i + count not in found_positions]
+
+            list_core_idx += found_positions
+            list_val_idx  += not_found_positions
+
+            count += basis_funcs_per_atom[atm_idx]
+
+        list_orb_idx = list_core_idx + list_val_idx
+        self.ncore = len(list_core_idx)
+
+        if self.args.orth == 'mo' or self.args.orth == 'fno':
+            self.core_reordering = [i for i in range(self.cell.nao_nr())] # in the mo/no case the core does not need to be reordered
+        else:
+            self.core_reordering = list_orb_idx
+
+        print("The number of core orbitals is ", self.ncore)
+        print("The reordering list is ", self.core_reordering)
     
     def compute_df_int(self, nao, X_k):
         raise NotImplementedError("Please Implement this method")
@@ -69,6 +158,11 @@ class pyscf_pbc_init (pyscf_init):
         super().__init__(comm.init_pbc_params() if args is None else args)
         self.kmesh, self.k_ibz, self.ir_list, self.conj_list, self.weight, self.ind, self.num_ik, self.kstruct = \
             comm.init_k_mesh(self.args, self.cell)
+        if self.args.pseudo is None: #Only initialize search for core orbitals if there are no pseudo
+            self.init_core()
+        else:
+            self.ncore = 0
+            self.core_reordering = [i for i in range(self.cell.nao_nr())]
 
     def mean_field_input(self, mydf=None):
         """Solve a given mean-field problem and store the solution in the Green/WeakCoupling format
@@ -135,6 +229,28 @@ class pyscf_pbc_init (pyscf_init):
             hf_dm = hf_dm.reshape((1,) + hf_dm.shape)
         S = np.array((S, ) * self.args.ns)
         T = np.array((T, ) * self.args.ns)
+
+        if self.args.orth == 'fno':
+            if self.args.input_fno==None:
+                raise ValueError("The fno orthogonalization requires an input file to read the density matrix")
+            else:
+                f = h5py.File(self.args.input_fno, 'r')
+                it = self.args.iter_fno 
+                if it == -1: 
+                    it = f["iter"][()]
+
+                G_tk = f["iter" + str(it) + "/G_tau/data"][()]
+                if G_tk.shape[1] > 1:
+                    print("UHF fno orth not implemented yet.")
+                    exit()
+                f.close()
+
+                ns = hf_dm.shape[0]
+                ink = G_tk.shape[1]
+                hf_dm = np.zeros((ns, ink, nao, nao), dtype=float)
+                for s in range(ns):
+                    for k in range(ink):
+                        hf_dm[s, k, :, :] = - 2 * G_tk[-1,s,k,:,:].real
     
         X_k = []
         X_inv_k = []
@@ -173,7 +289,7 @@ class pyscf_pbc_init (pyscf_init):
         # Save data into Green Software package input format.
         comm.save_data(
             self.args, self.cell, mf, self.kmesh, self.ind, self.weight, self.num_ik, self.ir_list, self.conj_list,
-            Nk, nk, NQ, F, S, T, hf_dm, tools.pbc.madelung(self.cell, self.kmesh), Zs, last_ao
+            Nk, nk, NQ, F, S, T, hf_dm, tools.pbc.madelung(self.cell, self.kmesh), Zs, last_ao, self.ncore, self.core_reordering
         )
         # Save symmetry operations info for main and auxiliary unit cells
         comm.store_kstruct_ops_info(self.args, self.cell, self.kmesh, self.kstruct, X_k=X_k, X_inv_k=X_inv_k,)
@@ -402,6 +518,8 @@ class pyscf_mol_init (pyscf_init):
         self.kcell.ecp = self.cell.ecp
         self.kcell.build()
         self.kstruct = libkpts.make_kpts(self.kcell, self.kmesh, space_group_symmetry=False, time_reversal_symmetry=False)
+        self.init_core()
+
 
     def mean_field_input(self, mydf=None):
         '''
@@ -464,6 +582,30 @@ class pyscf_mol_init (pyscf_init):
         S = np.array((S, ) * self.args.ns)
         T = np.array((T, ) * self.args.ns)
 
+        if self.args.orth == 'fno':
+            if self.args.input_fno==None:
+                raise ValueError("The fno orthogonalization requires an input file to read the density matrix")
+            else:
+                f = h5py.File(self.args.input_fno, 'r')
+                it = self.args.iter_fno 
+                if it == -1: 
+                    it = f["iter"][()]
+
+                G_tk = f["iter" + str(it) + "/G_tau/data"][()]
+                if G_tk.shape[2] > 1:
+                    print("There is more than one k-point, please provide a molecular input.")
+                    exit()
+                if G_tk.shape[1] > 1:
+                    print("UHF fno orth not implemented yet.")
+                    exit()
+                f.close()
+
+                ns = hf_dm.shape[0]
+                hf_dm = np.zeros((ns, nk, nao, nao), dtype=float)
+                for s in range(ns):
+                    for k in range(nk):
+                        hf_dm[s, k, :, :] = - 2 * G_tk[-1,s,k,:,:].real
+
         X_k = []
         X_inv_k = []
 
@@ -484,7 +626,7 @@ class pyscf_mol_init (pyscf_init):
         # Save data into Green Software package input format. Here we set Madelung constant to 0 as there is
         # no long range divergence for molecule
         comm.save_data(self.args, self.kcell, mf, self.kmesh, self.ind, self.weight, self.num_ik, self.ir_list,
-                       self.conj_list, Nk, nk, NQ, F, S, T, hf_dm, 0.0, Zs, last_ao)
+                       self.conj_list, Nk, nk, NQ, F, S, T, hf_dm, 0.0, Zs, last_ao, self.ncore, self.core_reordering)
         comm.store_mol_symmetry_info(self.args, self.kcell, auxcell, self.kmesh)
         # Save the AO->orthogonal basis transformation so tooling can move the
         # stored (orthogonalized) quantities back to the AO basis.

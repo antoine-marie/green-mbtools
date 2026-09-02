@@ -143,6 +143,73 @@ def _natural_per_k_with_fock_tiebreak(Sk, dmk, Fk, tol_degen=1e-8):
     C_NO = (S_inv_half @ u).astype(np.complex128)
     return C_NO.conj().T, Sk @ C_NO
 
+def fno_per_k(Sk, dmk):
+    s_ev, s_eb = np.linalg.eigh(Sk)
+    S_half = (s_eb * np.sqrt(s_ev)) @ s_eb.conj().T
+    S_inv_half = (s_eb / np.sqrt(s_ev)) @ s_eb.conj().T
+    M = S_half @ dmk @ S_half
+    nat_occ, Ck = np.linalg.eigh(M)
+    nocc = int(nat_occ.real.sum().round() / 2)
+    idx = np.argsort(nat_occ)[::-1]
+    nat_occ, Ck = nat_occ[idx], Ck[:,idx]
+    nat_occ_vir = nat_occ[nocc:]
+    print(f"There are {len(nat_occ) - nocc} virtual orbitals")
+    print(f"Their occupations are {nat_occ_vir}")
+    print(f"To keep only orbitals with occupations larger than 1e-7, the number of orbital to delete is {np.count_nonzero(nat_occ<1e-7)}")
+    print(f"To keep only orbitals with occupations larger than 5e-7, the number of orbital to delete is {np.count_nonzero(nat_occ<5e-7)}")
+    print(f"To keep only orbitals with occupations larger than 1e-6, the number of orbital to delete is {np.count_nonzero(nat_occ<1e-6)}")
+    print(f"To keep only orbitals with occupations larger than 5e-6, the number of orbital to delete is {np.count_nonzero(nat_occ<5e-6)}")
+    print(f"To keep only orbitals with occupations larger than 1e-5, the number of orbital to delete is {np.count_nonzero(nat_occ<1e-5)}")
+    print(f"To keep only orbitals with occupations larger than 5e-5, the number of orbital to delete is {np.count_nonzero(nat_occ<5e-5)}")
+    print(f"To keep only orbitals with occupations larger than 1e-4, the number of orbital to delete is {np.count_nonzero(nat_occ<1e-4)}")
+    print(f"To keep only orbitals with occupations larger than 5e-4, the number of orbital to delete is {np.count_nonzero(nat_occ<5e-4)}")
+    print(f"To keep only orbitals with occupations larger than 1e-3, the number of orbital to delete is {np.count_nonzero(nat_occ<1e-3)}")
+    print(f"To keep only orbitals with occupations larger than 5e-3, the number of orbital to delete is {np.count_nonzero(nat_occ<5e-3)}")
+    print(f"To keep only orbitals with occupations larger than 1e-2, the number of orbital to delete is {np.count_nonzero(nat_occ<1e-2)}")
+                    
+    # Find degenerate blocks
+    blocks = []
+    start = 0
+    for i in range(1, len(nat_occ_vir)):
+        if not np.isclose(nat_occ_vir[i], nat_occ_vir[i-1], atol=1e-8):
+            blocks.append(slice(start, i))
+            start = i
+        blocks.append(slice(start, len(nat_occ_vir)))
+                    
+    ndel = pct_occ_fno(nat_occ_vir, blocks, 0.75)
+    print(f"To keep 75% of total virtual occupation, the number of orbitals to delete is {ndel}")
+    ndel = pct_occ_fno(nat_occ_vir, blocks, 0.90)
+    print(f"To keep 90% of total virtual occupation, the number of orbitals to delete is {ndel}")
+    ndel = pct_occ_fno(nat_occ_vir, blocks, 0.95)
+    print(f"To keep 95% of total virtual occupation, the number of orbitals to delete is {ndel}")
+    ndel = pct_occ_fno(nat_occ_vir, blocks, 0.99)
+    print(f"To keep 99% of total virtual occupation, the number of orbitals to delete is {ndel}")
+    ndel = pct_occ_fno(nat_occ_vir, blocks, 0.995)
+    print(f"To keep 99.5% of total virtual occupation, the number of orbitals to delete is {ndel}")
+    ndel = pct_occ_fno(nat_occ_vir, blocks, 0.999)
+    print(f"To keep 99.9% of total virtual occupation, the number of orbitals to delete is {ndel}")
+    ndel = pct_occ_fno(nat_occ_vir, blocks, 0.9995)
+    print(f"To keep 99.95% of total virtual occupation, the number of orbitals to delete is {ndel}")
+
+    Ck_NO = (S_inv_half @ Ck).astype(np.complex128)
+    return Ck_NO.conj().T, Sk @ Ck_NO
+
+def pct_occ_fno(nat_occ_vir,blocks,thresh):            
+
+    total = nat_occ_vir.sum()
+    cum = 0.0
+    nkeep = 0
+    for b in blocks:
+        block_occ = nat_occ_vir[b].sum()
+        if (cum + block_occ) / total <= thresh:
+            cum += block_occ
+            nkeep += len(nat_occ_vir[b])
+        else:
+            cum += block_occ
+            nkeep += len(nat_occ_vir[b])
+            break
+
+    return len(nat_occ_vir) - nkeep
 
 def _realify(M):
     '''
@@ -213,10 +280,12 @@ def _build_X_ibz(mode, S_ibz, F_ibz, dm_ibz, mo_coeff_ibz,
             x, x_inv = _natural_per_k_with_fock_tiebreak(
                 Sk, dmk, Fk, tol_degen=tol_degen
             )
+        elif mode == "fno":
+            x, x_inv = fno_per_k(Sk,dmk)
         else:
             raise ValueError(
                 f"build_X_kspace: unknown mode {mode!r} "
-                "(expected 'lowdin', 'symmetric_lowdin', 'mo', or 'natural')."
+                "(expected 'lowdin', 'symmetric_lowdin', 'mo', 'natural' or 'fno')."
             )
         X_per_irrep[i_ir] = np.asarray(x, dtype=np.complex128)
         Xinv_per_irrep[i_ir] = np.asarray(x_inv, dtype=np.complex128)
@@ -424,6 +493,10 @@ def build_X_kspace(
         raise ValueError(
             "build_X_kspace: mode='mo' requires mo_coeff_ibz or F_ibz."
         )
+    if mode == "fno" and dm_ibz is None:
+          raise ValueError(
+            "build_X_kspace: mode='fno' requires dm_ibz."
+        )      
 
     ibz2bz = kstruct.ibz2bz
     n_ibz = len(ibz2bz)
