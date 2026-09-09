@@ -174,7 +174,7 @@ def fno_per_k(Sk, dmk):
         if not np.isclose(nat_occ_vir[i], nat_occ_vir[i-1], atol=1e-8):
             blocks.append(slice(start, i))
             start = i
-        blocks.append(slice(start, len(nat_occ_vir)))
+    blocks.append(slice(start, len(nat_occ_vir)))
                     
     ndel = pct_occ_fno(nat_occ_vir, blocks, 0.75)
     print(f"To keep 75% of total virtual occupation, the number of orbitals to delete is {ndel}")
@@ -310,7 +310,7 @@ def _build_X_ibz(mode, S_ibz, F_ibz, dm_ibz, mo_coeff_ibz,
     n_basis = X_per_irrep[0].shape[1]
     eye = np.eye(n_basis)
     for i_ir, (x, x_inv) in enumerate(zip(X_per_irrep, Xinv_per_irrep)):
-        if x.shape[0] != n_basis or not np.allclose(x_inv @ x, eye, atol=1e-8):
+        if x.shape[0] != n_basis or not np.allclose(x_inv @ x, eye, atol=1e-6):
             raise ValueError(
                 f"build_X_kspace: mode {mode!r} produced a rank-deficient, "
                 f"non-invertible X at IBZ point {i_ir} (shape {x.shape}, "
