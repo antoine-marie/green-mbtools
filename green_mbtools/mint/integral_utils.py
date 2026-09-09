@@ -412,23 +412,27 @@ def compute_integrals(args, mycell, mydf, kmesh, nao, X_k=None, basename = "df_i
                 buffer[cnt% chunk_size, s1:s1+Lpq.shape[0], :, :] = Lpq[0:Lpq.shape[0],:,:]
                 # s1 = NQ at maximum.
                 s1 += Lpq.shape[0]        
-        # print("Let's do some tests for NAF")
-        # Lpq_tmp = np.zeros((NQ, nao * nao), dtype=complex)
-        # print(buffer[cnt].shape)
-        # Lpq_tmp = buffer[cnt].reshape(NQ, nao * nao)
-        # print("Reshape the density fitted integral tensor:", Lpq_tmp.shape)
-        # M = np.einsum("pr,qr->pq", Lpq_tmp, Lpq_tmp.conj())
-        # print("Build M. Shape:", M.shape)
-        # eigval, eigvec = np.linalg.eigh(M)
-        # idx = np.argsort(eigval)[::-1]
-        # eigval, eigvec = eigval[idx], eigvec[:,idx]
-        # buffer[cnt] = np.einsum("rp,rq->qp", Lpq_tmp, eigvec).reshape(NQ, nao, nao)
-        # #print(eigval)
-        # print("There are", len(eigval[eigval<0.01]),"eigenvalues below 10^-2")
-        # print("There are", len(eigval[eigval<0.001]),"eigenvalues below 10^-3")
-        # print("There are", len(eigval[eigval<0.0001]),"eigenvalues below 10^-4")
-        # print("There are", len(eigval[eigval<0.00001]),"eigenvalues below 10^-5")
-        # print("End of the test")
+        print("Let's do some tests for NAF")
+        Lpq_tmp = np.zeros((NQ, nao * nao), dtype=complex)
+        print(buffer[cnt].shape)
+        Lpq_tmp = buffer[cnt].reshape(NQ, nao * nao)
+        print("Reshape the density fitted integral tensor:", Lpq_tmp.shape)
+        M = np.einsum("pr,qr->pq", Lpq_tmp, Lpq_tmp.conj())
+        print("Build M. Shape:", M.shape)
+        eigval, eigvec = np.linalg.eigh(M)
+        idx = np.argsort(eigval)[::-1]
+        eigval, eigvec = eigval[idx], eigvec[:,idx]
+        buffer[cnt] = np.einsum("rp,rq->qp", Lpq_tmp, eigvec).reshape(NQ, nao, nao)
+        print(eigval)
+        print(f"To keep only auxiliary functions with singular value larger than 5e-1, the number of orbital to delete is {len(eigval[eigval<0.5])}")
+        print(f"To keep only auxiliary functions with singular value larger than 1e-1, the number of orbital to delete is {len(eigval[eigval<0.1])}")
+        print(f"To keep only auxiliary functions with singular value larger than 5e-2, the number of orbital to delete is {len(eigval[eigval<0.05])}")
+        print(f"To keep only auxiliary functions with singular value larger than 1e-2, the number of orbital to delete is {len(eigval[eigval<0.01])}")
+        print(f"To keep only auxiliary functions with singular value larger than 1e-3, the number of orbital to delete is {len(eigval[eigval<0.001])}")
+        print(f"To keep only auxiliary functions with singular value larger than 1e-4, the number of orbital to delete is {len(eigval[eigval<0.0001])}")
+        print(f"To keep only auxiliary functions with singular value larger than 1e-5, the number of orbital to delete is {len(eigval[eigval<0.00001])}")
+        print(f"To keep only auxiliary functions with singular value larger than 1e-6, the number of orbital to delete is {len(eigval[eigval<0.000001])}")
+        print("End of the test")
         cnt += 1
 
         # if reach chunk size: (cnt-chunk_size) equals to chunk id.

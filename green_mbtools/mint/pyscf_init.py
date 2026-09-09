@@ -223,6 +223,14 @@ class pyscf_pbc_init (pyscf_init):
         else:
             vhf = mf.get_veff(dm_kpts=hf_dm).astype(dtype=np.complex128)
         F = mf.get_fock(T,S,vhf,hf_dm).astype(dtype=np.complex128)
+
+        max_cond = 0
+        for ik in range(len(S)):
+            Sk = S[ik]
+            cond = np.linalg.cond(Sk)
+            if cond > max_cond:
+                max_cond = cond
+        print(f'The condition number of this basis set is = {max_cond:.6e}')
     
         if len(F.shape) == 3:
             F     = F.reshape((1,) + F.shape)
@@ -231,26 +239,35 @@ class pyscf_pbc_init (pyscf_init):
         T = np.array((T, ) * self.args.ns)
 
         if self.args.orth == 'fno':
-            if self.args.input_fno==None:
-                raise ValueError("The fno orthogonalization requires an input file to read the density matrix")
+            if self.args.input_fno==None or self.args.sim_fno==None:
+                raise ValueError("The fno orthogonalization requires input files to read the density matrix")
             else:
                 f = h5py.File(self.args.input_fno, 'r')
+                ibz2bz = f["/symmetry/k/ibz2bz"][()]
+                bz2ibz = f["/symmetry/k/bz2ibz"][()]
+                tr_conj = f["/symmetry/k/tr_conj"][()]
+                k_sym_trans = f["/symmetry/k/k_sym_transform_ao"][()]
+                f.close()
+                
+                f = h5py.File(self.args.sim_fno, 'r')
                 it = self.args.iter_fno 
                 if it == -1: 
                     it = f["iter"][()]
 
-                G_tk = f["iter" + str(it) + "/G_tau/data"][()]
-                if G_tk.shape[1] > 1:
+                rG_tk = f["iter" + str(it) + "/G_tau/data"][()]
+                if rG_tk.shape[1] > 1:
                     print("UHF fno orth not implemented yet.")
                     exit()
                 f.close()
 
+                G_tk = mb.to_full_bz(rG_tk, tr_conj, ibz2bz, bz2ibz, 2, k_sym_trans)
+
                 ns = hf_dm.shape[0]
-                ink = G_tk.shape[1]
-                hf_dm = np.zeros((ns, ink, nao, nao), dtype=float)
+                hf_dm = np.zeros((ns, nk, nao, nao), dtype=complex)
                 for s in range(ns):
-                    for k in range(ink):
-                        hf_dm[s, k, :, :] = - 2 * G_tk[-1,s,k,:,:].real
+                    for k in range(nk):
+                        hf_dm[s, k, :, :] = - 2 * G_tk[-1,s,k,:,:]
+                        #hf_dm[s, k] = 0.5 * (hf_dm[s, k] + hf_dm[s, k].conj().T)
     
         X_k = []
         X_inv_k = []
@@ -281,11 +298,17 @@ class pyscf_pbc_init (pyscf_init):
         # is a different set of points entirely.
         sym_kstruct = libkpts.make_kpts(
             self.cell, self.kmesh,
-            space_group_symmetry=self.args.space_symm,
+            space_group_symmetry=False,
             time_reversal_symmetry=True)
+        
         X_k, X_inv_k, S, F, T, hf_dm = comm.orthogonalize(
             mydf, self.args.orth, X_k, X_inv_k, F, T, hf_dm, S,
             sym_kstruct=sym_kstruct, mycell=self.cell, spinor=self.args.x2c==2)
+
+        Y_Q, Y_Q_inv = None, None
+        if self.args.aux_orth != "none":
+            Y_Q, Y_Q_inv = comm.build_naf_transform(mydf, self.args, auxcell, sym_kstruct=sym_kstruct)
+            
         # Save data into Green Software package input format.
         comm.save_data(
             self.args, self.cell, mf, self.kmesh, self.ind, self.weight, self.num_ik, self.ir_list, self.conj_list,
@@ -583,10 +606,10 @@ class pyscf_mol_init (pyscf_init):
         T = np.array((T, ) * self.args.ns)
 
         if self.args.orth == 'fno':
-            if self.args.input_fno==None:
-                raise ValueError("The fno orthogonalization requires an input file to read the density matrix")
+            if self.args.input_fno==None or self.args.sim_fno==None:
+                raise ValueError("The fno orthogonalization requires input files to read the density matrix")
             else:
-                f = h5py.File(self.args.input_fno, 'r')
+                f = h5py.File(self.args.sim_fno, 'r')
                 it = self.args.iter_fno 
                 if it == -1: 
                     it = f["iter"][()]
@@ -623,6 +646,7 @@ class pyscf_mol_init (pyscf_init):
         X_k, X_inv_k, S, F, T, hf_dm = comm.orthogonalize(mydf, self.args.orth, X_k, X_inv_k, F, T, hf_dm, S,
                                                           sym_kstruct=self.kstruct, mycell=self.kcell,
                                                           spinor=self.args.x2c==2)
+        
         # Save data into Green Software package input format. Here we set Madelung constant to 0 as there is
         # no long range divergence for molecule
         comm.save_data(self.args, self.kcell, mf, self.kmesh, self.ind, self.weight, self.num_ik, self.ir_list,
