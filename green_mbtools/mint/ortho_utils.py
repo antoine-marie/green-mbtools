@@ -593,3 +593,140 @@ def build_X_kspace_from_ao_reps(
     )
 
 
+
+def _naf_per_q(Mq):
+    '''
+    Diagonalize the aux-metric M(q) = <L(k,k-q) L(k,k-q)^dagger>_k at a
+    single IBZ q-point and return the (unitary) aux-AO -> NAF rotation.
+
+    Unlike lowdin_per_k/symmetric_lowdin_per_k, this is a pure basis
+    rotation (no rescaling): Y is unitary, so Y_inv = Y^dagger exactly.
+    Eigenvalues are sorted descending so that, if a caller later truncates
+    (in the scGW reader, not here), the most important NAFs come first.
+
+    Returns
+    -------
+    Y, Y_inv : (NQ, NQ) complex128 ndarrays (or (n_keep, NQ) / (NQ, n_keep)
+        if ``thresh`` drops modes)
+    '''
+    Mq = np.asarray(Mq, dtype=np.complex128)
+    Mq = _realify(Mq)
+    #Mq = 0.5 * (Mq + Mq.conj().T)
+    eigval, eigvec = np.linalg.eigh(Mq)
+    idx = np.argsort(eigval)[::-1]
+    eigval, eigvec = eigval[idx], eigvec[:, idx]
+    # X Z X^dagger convention: Y has shape (n_naf, NQ), Y_inv (NQ, n_naf)
+    Y = eigvec.conj().T.astype(np.complex128)
+    Y_inv = eigvec.astype(np.complex128)
+
+    print("Let's do some tests for NAF")
+    print(eigval)
+    print(f"To keep only auxiliary functions with singular value larger than 5e-1, the number of orbital to delete is {len(eigval[eigval<0.5])}")
+    print(f"To keep only auxiliary functions with singular value larger than 1e-1, the number of orbital to delete is {len(eigval[eigval<0.1])}")
+    print(f"To keep only auxiliary functions with singular value larger than 5e-2, the number of orbital to delete is {len(eigval[eigval<0.05])}")
+    print(f"To keep only auxiliary functions with singular value larger than 1e-2, the number of orbital to delete is {len(eigval[eigval<0.01])}")
+    print(f"To keep only auxiliary functions with singular value larger than 1e-3, the number of orbital to delete is {len(eigval[eigval<0.001])}")
+    print(f"To keep only auxiliary functions with singular value larger than 1e-4, the number of orbital to delete is {len(eigval[eigval<0.0001])}")
+    print(f"To keep only auxiliary functions with singular value larger than 1e-5, the number of orbital to delete is {len(eigval[eigval<0.00001])}")
+    print(f"To keep only auxiliary functions with singular value larger than 1e-6, the number of orbital to delete is {len(eigval[eigval<0.000001])}")
+    print("End of the test")
+    
+    return Y, Y_inv
+
+
+def _build_Y_ibz(M_ibz):
+    '''
+    Per-IBZ-q NAF construction shared by ``build_Y_qspace``.
+    Analogous to ``_build_X_ibz`` for the AO-basis orthogonalizers.
+    '''
+    n_ibz = np.asarray(M_ibz).shape[0]
+    Y_per_irrep = [None] * n_ibz
+    Yinv_per_irrep = [None] * n_ibz
+    for i_ir in range(n_ibz):
+        Y, Y_inv = _naf_per_q(M_ibz[i_ir])
+        Y_per_irrep[i_ir] = Y
+        Yinv_per_irrep[i_ir] = Y_inv
+
+    # Mirror _build_X_ibz's rank-consistency guard: propagation via
+    # _propagate_with_reps assumes a common shape across the IBZ so it can
+    # allocate a single (nq, n_naf, NQ) array.
+    shapes = {y.shape for y in Y_per_irrep}
+    if len(shapes) != 1:
+        raise ValueError(
+            f"build_Y_qspace produced NAF bases of "
+            f"differing size across IBZ q-points ({sorted(shapes)}). "
+            "Symmetry propagation requires a uniform rank."
+        )
+    return Y_per_irrep, Yinv_per_irrep
+
+
+def _propagate_Y_to_star(Y_per_irrep, Yinv_per_irrep, qstruct, auxcell):
+    '''
+    Propagate per-IBZ-q ``(Y, Y_inv)`` to every BZ q-point, using the same
+    aux-AO-space representations ``get_representation`` computes in
+    ``common_utils.store_auxcell_kstruct_ops_info`` (there called
+    ``mat_ao`` / stored as ``k_sym_transform_j2c``). Reusing
+    ``_propagate_with_reps`` keeps the reconstruction rule (incl. the
+    TR-conjugation branch) identical to the AO-basis ``X_k`` propagation.
+    '''
+    nq = qstruct.nkpts
+    stars_ops = qstruct.stars_ops_bz
+    tr_conj_bz = qstruct.time_reversal_symm_bz
+    sample = Y_per_irrep[0]
+    n_naf, NQ = sample.shape
+
+    q_sym_transform = np.zeros((nq, NQ, NQ), dtype=np.complex128)
+    for iq in range(nq):
+        iop = stars_ops[iq]
+        q_sym_transform[iq] = get_representation(iq, iop, auxcell, qstruct)
+
+    return _propagate_with_reps(
+        Y_per_irrep, Yinv_per_irrep,
+        qstruct.ibz2bz, qstruct.bz2ibz,
+        q_sym_transform, tr_conj_bz,
+    )
+
+
+def build_Y_qspace(qstruct, auxcell, M_ibz):
+    '''
+    Build the auxiliary-basis -> NAF transformation ``(Y_Q, Y_Q_inv)`` over
+    the full q-BZ, analogous to ``build_X_kspace`` for the AO/X basis.
+
+    ``Y_Q`` is constructed only at IBZ q-points (one unitary rotation per
+    q, shared by construction across every ``(k1, k2)`` pair with
+    ``k1 - k2 == q``, since the aux-AO metric at a given q does not depend
+    on which such pair produced it — see ``common_utils.build_naf_transform``),
+    then propagated to every star member via the space-group + time-reversal
+    representations carried by ``qstruct``, exactly as ``X_k`` is
+    propagated from IBZ k-points in ``build_X_kspace``.
+
+    Parameters
+    ----------
+    qstruct : pyscf.pbc.lib.kpts.KPoints
+        q-point symmetry structure, as built by
+        ``kpt_utils.build_q_struct`` / ``common_utils.init_q_mesh`` and
+        consumed by ``store_auxcell_kstruct_ops_info``.
+    auxcell : pyscf.pbc.gto.Cell
+        auxiliary cell (defines the aux-AO representation used for
+        propagation).
+    M_ibz : (n_ibz, NQ, NQ) ndarray
+        Aux-metric ``M(q) = <L(k, k-q) L(k, k-q)^dagger>_k`` at each IBZ
+        q-point, in the order ``qstruct.kpts[qstruct.ibz2bz]``.
+
+    Returns
+    -------
+    Y_Q     : (nq, n_naf, NQ) complex128 ndarray
+    Y_Q_inv : (nq, NQ, n_naf) complex128 ndarray
+    '''
+    M_ibz = np.asarray(M_ibz)
+    ibz2bz = qstruct.ibz2bz
+    n_ibz = len(ibz2bz)
+    if M_ibz.shape[0] != n_ibz:
+        raise ValueError(
+            f"build_Y_qspace: M_ibz has {M_ibz.shape[0]} q-points but "
+            f"qstruct has {n_ibz} IBZ q-points."
+        )
+
+    Y_per_irrep, Yinv_per_irrep = _build_Y_ibz(M_ibz)
+
+    return _propagate_Y_to_star(Y_per_irrep, Yinv_per_irrep, qstruct, auxcell)

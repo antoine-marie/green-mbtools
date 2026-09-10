@@ -314,9 +314,43 @@ def integrals_grid(mycell, kmesh):
     return kptij_idx, kij_conj, kij_trans, kpair_irre_list, num_kpair_stored, kptis, kptjs
 
 
-def compute_integrals(args, mycell, mydf, kmesh, nao, X_k=None, basename = "df_int", cderi_name="cderi.h5", keep=True, keep_after=False, cderi_name2="cderi_ewald.h5"):
+def compute_integrals(args, mycell, mydf, kmesh, nao, X_k=None, basename = "df_int", cderi_name="cderi.h5", keep=True, keep_after=False, cderi_name2="cderi_ewald.h5", Y_Q=None, qstruct=None):
 
     kptij_idx, kij_conj, kij_trans, kpair_irre_list, num_kpair_stored, kptis, kptjs = integrals_grid(mycell, kmesh)
+
+    # Map each stored k-pair to its q-BZ index, so every pair sharing the
+    # same physical q = k1 - k2 is rotated by the *same* Y_Q[iq].
+    naf_rotate = Y_Q is not None
+    if naf_rotate:
+        if qstruct is None:
+            raise ValueError(
+                "compute_integrals: Y_Q was provided but qstruct is None; "
+                "qstruct is required to map each (k1,k2) pair to its q-BZ index."
+            )
+        from pyscf.pbc.lib.kpts_helper import member
+        from . import kpt_utils
+
+        def _wrap_q(q):
+            # Match qstruct.kpts' convention: kpt_utils.build_q_struct folds
+            # each unique raw difference k1-k2 via wrap_k before storing it.
+            # compute_integrals only visits the symmetry-reduced
+            # kpair_irre_list (unlike build_naf_transform's full nk^2 loop),
+            # so it is not guaranteed to hit the literal pair whose raw
+            # difference already equals the wrapped representative -- fold
+            # here so member() compares like with like.
+            qi = mycell.get_scaled_kpts(q)
+            qi = [kpt_utils.wrap_k(l) for l in qi]
+            return mycell.get_abs_kpts(np.asarray(qi))
+
+        q_idx_for_pair = np.empty(len(kptis), dtype=int)
+        for i in range(len(kptis)):
+            q = _wrap_q(kptis[i] - kptjs[i])
+            match = member(q, qstruct.kpts)
+            if len(match) == 0:
+                raise RuntimeError(
+                    f"compute_integrals: q = k1-k2 for pair {i} not found in qstruct.kpts."
+                )
+            q_idx_for_pair[i] = match[0]
 
     mydf.kpts = kmesh
     filename = basename + "/meta.h5"
@@ -401,6 +435,7 @@ def compute_integrals(args, mycell, mydf, kmesh, nao, X_k=None, basename = "df_i
             buffer[cnt% chunk_size, s1:s1+Lpq.shape[0], :, :] = Lpq[0:Lpq.shape[0],:,:]
             # s1 = NQ at maximum.
             s1 += Lpq.shape[0]
+            
         if apply_correction and np.allclose(k1, k2) :
             s1 = 0
             for XXX in correction_df.sr_loop((k1,k1), max_memory=4000, compact=False):
@@ -411,28 +446,17 @@ def compute_integrals(args, mycell, mydf, kmesh, nao, X_k=None, basename = "df_i
                     Lpq = _rotate_Lpq(Lpq, X_i, X_j)
                 buffer[cnt% chunk_size, s1:s1+Lpq.shape[0], :, :] = Lpq[0:Lpq.shape[0],:,:]
                 # s1 = NQ at maximum.
-                s1 += Lpq.shape[0]        
-        print("Let's do some tests for NAF")
-        Lpq_tmp = np.zeros((NQ, nao * nao), dtype=complex)
-        print(buffer[cnt].shape)
-        Lpq_tmp = buffer[cnt].reshape(NQ, nao * nao)
-        print("Reshape the density fitted integral tensor:", Lpq_tmp.shape)
-        M = np.einsum("pr,qr->pq", Lpq_tmp, Lpq_tmp.conj())
-        print("Build M. Shape:", M.shape)
-        eigval, eigvec = np.linalg.eigh(M)
-        idx = np.argsort(eigval)[::-1]
-        eigval, eigvec = eigval[idx], eigvec[:,idx]
-        buffer[cnt] = np.einsum("rp,rq->qp", Lpq_tmp, eigvec).reshape(NQ, nao, nao)
-        print(eigval)
-        print(f"To keep only auxiliary functions with singular value larger than 5e-1, the number of orbital to delete is {len(eigval[eigval<0.5])}")
-        print(f"To keep only auxiliary functions with singular value larger than 1e-1, the number of orbital to delete is {len(eigval[eigval<0.1])}")
-        print(f"To keep only auxiliary functions with singular value larger than 5e-2, the number of orbital to delete is {len(eigval[eigval<0.05])}")
-        print(f"To keep only auxiliary functions with singular value larger than 1e-2, the number of orbital to delete is {len(eigval[eigval<0.01])}")
-        print(f"To keep only auxiliary functions with singular value larger than 1e-3, the number of orbital to delete is {len(eigval[eigval<0.001])}")
-        print(f"To keep only auxiliary functions with singular value larger than 1e-4, the number of orbital to delete is {len(eigval[eigval<0.0001])}")
-        print(f"To keep only auxiliary functions with singular value larger than 1e-5, the number of orbital to delete is {len(eigval[eigval<0.00001])}")
-        print(f"To keep only auxiliary functions with singular value larger than 1e-6, the number of orbital to delete is {len(eigval[eigval<0.000001])}")
-        print("End of the test")
+                s1 += Lpq.shape[0]
+
+        # Rotate the fully-assembled auxiliary index into the NAF basis,
+        # using the same Y_Q[iq] for every pair sharing this pair's q.
+        if naf_rotate:
+            iq = q_idx_for_pair[i]
+            Y_q = Y_Q[iq]
+            buffer[cnt % chunk_size] = np.einsum(
+                "QP,Pab->Qab", Y_q, buffer[cnt % chunk_size], optimize=True
+            )
+
         cnt += 1
 
         # if reach chunk size: (cnt-chunk_size) equals to chunk id.

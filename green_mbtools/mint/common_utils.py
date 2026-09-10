@@ -521,6 +521,98 @@ def orthogonalize(mydf, orth, X_k, X_inv_k, F, T, hf_dm, S, sym_kstruct=None, my
     S = np.array([S] * ns)
     return X_k, X_inv_k, S, F, T, hf_dm
 
+def build_naf_transform(mydf, args, auxcell, qstruct):
+    """
+    Build the auxiliary-basis -> NAF transformation (Y_Q, Y_Q_inv) over the
+    full q-BZ, for use with store_auxcell_kstruct_ops_info and the
+    NAF rotation applied to the stored 3-center integrals.
+
+    The aux metric M(q) = <L(k, k-q) L(k, k-q)^dagger>_k depends only on
+    q = k1 - k2 (not on which (k1, k2) pair with that q produced it, the
+    same reason j2c(q) is built once per q in _make_j3c). So M is built by
+    literally summing/averaging over every k-pair in the full k-mesh whose
+    wrapped difference equals a given IBZ q representative -- no symmetry
+    rotation is needed for this step; rotation is only needed afterwards
+    to propagate Y from IBZ q's to the rest of the q-BZ (done inside
+    ortho_utils.build_Y_qspace).
+
+    Parameters
+    ----------
+    mydf : pyscf.pbc.df density-fitting object
+        Must have ``mydf.kpts`` set and ``mydf._cderi`` pointing at a
+        built cderi file (i.e. called after ``mydf.build()`` /
+        ``solve_mean_field``).
+    args : map
+        simulation parameters. Uses ``args.space_symm``, ``args.tr_symm``.
+    auxcell : pyscf.pbc.gto.Cell
+        auxiliary cell.
+    qstruct : pyscf.pbc.lib.kpts.KPoints
+        q-point symmetry structure, built from ``auxcell`` and
+        ``mydf.kpts`` by the caller (e.g. via
+        ``kpt_utils.build_q_struct(auxcell, kmesh, ...)`` or
+        ``init_q_mesh(args, auxcell, kmesh, save_data=False)``). This same
+        object must also be passed to ``store_auxcell_kstruct_ops_info``
+        and, together with the returned ``Y_Q``, to ``compute_integrals``,
+        so all three consume identical q-BZ indexing.
+
+    Returns
+    -------
+    Y_Q, Y_Q_inv : ndarray
+        Forward/inverse aux-AO -> NAF transforms over the full q-BZ,
+        indexed consistently with the ``qstruct`` passed in.
+    """
+    from pyscf.pbc.lib.kpts_helper import member
+
+    mycell = mydf.cell
+    kmesh = np.asarray(mydf.kpts)
+    nao = mycell.nao_nr()
+    NQ = auxcell.nao_nr()
+
+    # # q-mesh + symmetry structure, built the same way as
+    # # store_auxcell_kstruct_ops_info (mycell arg = auxcell, so the star
+    # # operators used for propagation act in the aux-AO representation).
+    # qstruct = kpt_utils.build_q_struct(auxcell, kmesh, space_symm=False, tr_symm=True)
+    ibz2bz = np.asarray(qstruct.ibz2bz)
+    ibz_qpts = qstruct.kpts[ibz2bz]
+    n_ibz = len(ibz2bz)
+
+    M_ibz = np.zeros((n_ibz, NQ, NQ), dtype=np.complex128)
+    counts = np.zeros(n_ibz, dtype=np.int64)
+
+    for i1, k1 in enumerate(kmesh):
+        for i2, k2 in enumerate(kmesh):
+            # Locate this pair's q among the IBZ representatives directly;
+            # skip pairs whose q is not an IBZ representative (they belong
+            # to a different star and are not needed here -- their Y is
+            # obtained by propagation, not by direct averaging).
+            q = k1 - k2
+            match = member(q, ibz_qpts)
+            if len(match) == 0:
+                continue
+            i_ir = match[0]
+            Lpq_full = np.zeros((NQ, nao, nao), dtype=np.complex128)
+            s1 = 0
+            for XXX in mydf.sr_loop((k1, k2), max_memory=4000, compact=False):
+                LpqR, LpqI = XXX[0], XXX[1]
+                Lpq = (LpqR + LpqI * 1j).reshape(LpqR.shape[0], nao, nao)
+                Lpq_full[s1:s1 + Lpq.shape[0], :, :] = Lpq
+                s1 += Lpq.shape[0]
+
+            Lpq_flat = Lpq_full.reshape(NQ, nao * nao)
+            M_ibz[i_ir] += np.einsum("Qr,Pr->QP", Lpq_flat, Lpq_flat.conj(),
+                                      optimize=True)
+            counts[i_ir] += 1
+
+    if np.any(counts == 0):
+        missing = np.where(counts == 0)[0]
+        raise RuntimeError(
+            f"build_naf_transform: no k-pairs found for IBZ q-index(es) "
+            f"{missing.tolist()}; cannot build M(q) there."
+        )
+    M_ibz /= counts[:, None, None]
+
+    # Truncation is intended to happen downstream in scGW, not here.
+    return ortho_utils.build_Y_qspace(qstruct, auxcell, M_ibz)
 
 def add_common_params(parser):
     '''
@@ -580,6 +672,11 @@ def add_common_params(parser):
     parser.add_argument("--input_fno", type=str, default=None, help="GW/GF2 input file to read symmetry of the density matrix for natural orbital")
     parser.add_argument("--sim_fno", type=str, default=None, help="GW/GF2 output file to read density matrix for natural orbital")
     parser.add_argument("--iter_fno", type=int, default=2, help="GW/GF2 iteration to use")
+    parser.add_argument(
+        "--aux_orth", type=str, default="none", choices=["none", "naf"],
+        help="Auxiliary basis for stored 3-center integrals: "
+             "'none' = keep aux-AO basis; 'naf' = natural auxiliary functions."
+    )
 
 def add_pbc_params(parser):
     '''
@@ -1146,7 +1243,7 @@ def store_orth_transform(args, X_k, X_inv_k):
     inp_data.close()
 
 
-def store_auxcell_kstruct_ops_info(args, auxcell, kmesh):
+def store_auxcell_kstruct_ops_info(args, auxcell, kmesh, Y_Q=None, Y_Q_inv=None):
     """Store symmetry operation information for k-points into hdf5 file in Green'WeakCoupling format
     for auxcell only case
 
@@ -1160,6 +1257,27 @@ def store_auxcell_kstruct_ops_info(args, auxcell, kmesh):
         k-mesh for the Brillouin Zone
     aux_kstruct : pyscf.pbc.symm.KPointsSymmetry
         k-point symmetry structure for aux-basis
+    Y_Q : ndarray, optional
+        Per-q-BZ auxiliary-basis -> NAF rotation (unitary), as returned by
+        ``build_naf_transform``. Required together with ``Y_Q_inv`` when
+        ``args.aux_orth != "none"``, so j2c and the exported q-space
+        symmetry operators are expressed in the same NAF basis as the
+        three-center integrals stored by ``compute_integrals``.
+
+        ``Y_Q`` is indexed by the raw full-BZ q position (as returned by
+        ``build_naf_transform``, which builds its own TR-always,
+        space-group-off q-structure purely to satisfy the same k->-k
+        conjugate-pair gauge constraint ``compute_integrals`` always
+        applies -- mirroring ``X_k``'s ``sym_kstruct``). That full-BZ
+        ordering is guaranteed to match the ``qstruct`` built here from
+        ``args.space_symm``/``args.tr_symm`` (only the IBZ
+        reduction/stars differ, not the underlying BZ q-list), so ``Y_Q``
+        can be indexed directly by this function's own ``ik`` without
+        needing the caller's q-structure passed in.
+    Y_Q_inv : ndarray, optional
+        Inverse NAF rotation over the full q-BZ. Since Y_Q is unitary,
+        this is ``Y_Q.conj().transpose(0, 2, 1)``, but is accepted
+        explicitly for API symmetry with X_k/X_inv_k.
     """
 
     # generate periodic cell for auxbasis
@@ -1174,6 +1292,14 @@ def store_auxcell_kstruct_ops_info(args, auxcell, kmesh):
     stars = qstruct.stars
     n_stars = len(stars)
 
+    naf_rotate = Y_Q is not None
+    if naf_rotate and (Y_Q_inv is None):
+        raise ValueError(
+            "store_auxcell_kstruct_ops_info: Y_Q was provided but Y_Q_inv "
+            "is None; both are required to rotate j2c and the q-space "
+            "symmetry operators consistently."
+        )
+    
     # read j2c and compute j2c_sqrt and j2c_sqrt_inv for each k-point using lower Cholesky
     # decomposition to match the convention used by PySCF when building j3c integrals.
     # PySCF computes B = L^{-1} @ eri3c (lower Cholesky, j2c = LL†), so P0_tilde lives
@@ -1207,6 +1333,8 @@ def store_auxcell_kstruct_ops_info(args, auxcell, kmesh):
     # NOTE: only one operator per k-point is stored, the one that connects it to the irreducible k-point
     kspace_orep_j2c = np.zeros((nk, nao, nao), dtype=np.complex128)
     kspace_orep_p0 = np.zeros((nk, nao, nao), dtype=np.complex128)
+
+    tr_conj_bz_q = qstruct.time_reversal_symm_bz
     
     for ik in range(nk):
         # indexing
@@ -1239,8 +1367,22 @@ def store_auxcell_kstruct_ops_info(args, auxcell, kmesh):
         # get effective dimensions
         ncols = j2c_irre_k_sqrt.shape[1]
         nrows = j2c_ik_sqrt_inv.shape[0]
-        # transform to j2c basis
-        kspace_orep_p0[ik, :nrows, :ncols] = j2c_ik_sqrt_inv @ mat_ao @ j2c_irre_k_sqrt
+        # transform to j2c (L) basis -- this operator correctly reconstructs
+        # the RAW L-basis representative at ik from q_ir (unchanged from the
+        # original, non-NAF code).
+        p0_op = j2c_ik_sqrt_inv @ mat_ao @ j2c_irre_k_sqrt
+        if naf_rotate:
+            # The stored 3-center integrals (and hence P0_tilde) live in the
+            # NAF-rotated L-basis at EVERY q (compute_integrals applies
+            # Y_Q[iq] to the raw L-basis Lpq). So the exported reconstruction
+            # operator must itself be sandwiched by Y_Q, exactly like X_k
+            # sandwiches kspace_orep in store_kstruct_ops_info -- Y_Q must
+            # NOT be injected into mat_ao/j2c themselves (those live in the
+            # unrelated raw aux-AO basis).
+            # Y_left = Y_Q[ik].conj() if tr_conj_bz_q[ik] else Y_Q[ik]
+            p0_op = Y_Q[ik] @ p0_op @ Y_Q_inv[irre_q_bz]
+        kspace_orep_p0[ik, :nrows, :ncols] = p0_op
+#        kspace_orep_p0[ik, :nrows, :ncols] = j2c_ik_sqrt_inv @ mat_ao @ j2c_irre_k_sqrt
         kspace_orep_j2c[ik] = mat_ao
         # clean up for next iteration
         j2c_irre_i = None
